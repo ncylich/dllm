@@ -22,17 +22,16 @@ def is_xla_available() -> bool:
 
 
 def is_tpu_available() -> bool:
-    """Check if running on TPU (XLA device available)."""
-    if not is_xla_available():
-        return False
-    try:
-        import torch_xla.core.xla_model as xm
+    """Check if running on TPU (XLA device available).
 
-        # Try to get an XLA device - this will succeed on TPU
-        device = xm.xla_device()
-        return device is not None
-    except Exception:
-        return False
+    Uses PJRT_DEVICE environment variable to detect TPU without initializing
+    the XLA runtime, which is required for compatibility with xmp.spawn().
+    """
+    import os
+
+    # Check PJRT_DEVICE env var - set by TPU runtime and accelerate launcher
+    # This avoids calling xm.xla_device() which would initialize the runtime
+    return os.environ.get("PJRT_DEVICE") == "TPU"
 
 
 def get_device(local_rank: int = 0) -> torch.device:
