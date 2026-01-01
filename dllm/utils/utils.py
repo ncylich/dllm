@@ -274,10 +274,29 @@ def parse_spec(spec: str):
 
 def get_default_logger(name):
     logger = logging.getLogger(name)
-    if accelerate.PartialState().is_main_process:
-        logger.setLevel(logging.INFO)
-    else:
-        logger.setLevel(logging.WARNING)
+    # Defer PartialState() call to avoid XLA runtime initialization at import time.
+    # On TPU, PartialState() calls xm.xla_device() which must happen AFTER xmp.spawn().
+    # Log level will be set on first log call via a lazy filter.
+    logger.setLevel(logging.DEBUG)  # Allow all messages through initially
+
+    class LazyLevelFilter(logging.Filter):
+        """Set log level lazily on first log to defer PartialState() call."""
+
+        _level_set = False
+
+        def filter(self, record):
+            if not self._level_set:
+                self._level_set = True
+                try:
+                    if accelerate.PartialState().is_main_process:
+                        logger.setLevel(logging.INFO)
+                    else:
+                        logger.setLevel(logging.WARNING)
+                except Exception:
+                    logger.setLevel(logging.INFO)
+            return True
+
+    logger.addFilter(LazyLevelFilter())
     handler = logging.StreamHandler(sys.stdout)  # print to terminal
     formatter = logging.Formatter(
         fmt=(
