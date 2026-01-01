@@ -119,7 +119,7 @@ def train(
     logger.info("Start training...")
     trainer = editflow.EditFlowTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=dataset["train"],
         eval_dataset=dataset.get("test", None),
         args=training_args,
