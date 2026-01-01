@@ -10,6 +10,7 @@ rdzv_backend: static
 same_network: true
 tpu_env:
   - TORCH_COMPILE_DISABLE=1
+  - DS_ACCELERATOR=cpu
 tpu_use_cluster: false
 tpu_use_sudo: false
 use_cpu: false

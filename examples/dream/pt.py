@@ -26,12 +26,13 @@ import functools
 import os
 from dataclasses import dataclass, field
 
+# Import dllm FIRST to disable torch.compile on TPU before transformers loads
+import dllm
+from dllm.pipelines import dream
+
 import accelerate
 import torch
 import transformers
-
-import dllm
-from dllm.pipelines import dream
 
 logger = dllm.utils.get_default_logger(__name__)
 
