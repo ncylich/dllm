@@ -15,29 +15,42 @@ from dllm.data.utils import (
 
 
 def load_dataset_opc_sft(
-    dataset_name_or_path: str, name: str | None = None, lang: str | None = None
+    dataset_name_or_path: str,
+    name: str | None = None,
+    lang: str | None = None,
+    streaming: bool = False,
 ) -> DatasetDict:
     """
     Load OpenCoder OPC SFT dataset(s) and produce a DatasetDict with a train/test split.
     - If `name` is provided: load that specific config.
     - If `name` is None: load *all* available configs and concatenate them.
+    - If `streaming` is True: return an IterableDatasetDict for memory-efficient loading.
     """
 
-    def _map_to_messages(ds: Dataset) -> Dataset:
-        def map_fn(example):
-            return {
-                "messages": [
-                    {"role": "user", "content": example["instruction"]},
-                    {"role": "assistant", "content": example["output"]},
-                ]
-            }
+    def map_fn(example):
+        return {
+            "messages": [
+                {"role": "user", "content": example["instruction"]},
+                {"role": "assistant", "content": example["output"]},
+            ]
+        }
 
+    def _map_to_messages(ds: Dataset) -> Dataset:
         # Remove all original columns after mapping
         remove_cols = ds.column_names
         return ds.map(map_fn, remove_columns=remove_cols, num_proc=4)
 
+    def _map_to_messages_streaming(ds):
+        # For streaming, specify columns explicitly
+        remove_cols = ["instruction", "output", "input"]
+        return ds.map(map_fn, remove_columns=remove_cols)
+
     def _load_one_config(dataset_name_or_path: str, cfg_name: str) -> Dataset:
-        ds = load_dataset(dataset_name_or_path, cfg_name, split="train")
+        ds = load_dataset(
+            dataset_name_or_path, cfg_name, split="train", streaming=streaming
+        )
+        if streaming:
+            return _map_to_messages_streaming(ds)
         return _map_to_messages(ds)
 
     if name is not None:
@@ -48,9 +61,22 @@ def load_dataset_opc_sft(
         if not cfgs:
             raise ValueError(f"No configs found for dataset: {dataset_name_or_path}")
         parts = [_load_one_config(dataset_name_or_path, c) for c in cfgs]
-        train_ds = concatenate_datasets(parts)
+        if streaming:
+            from dllm.data.utils import _concat_iterabledatasets
 
-    # Final split
+            train_ds = _concat_iterabledatasets(parts)
+        else:
+            train_ds = concatenate_datasets(parts)
+
+    if streaming:
+        # For streaming, we can't do train_test_split, just return train
+        if lang is not None:
+            train_ds = train_ds.filter(
+                lambda row: lang in row["messages"][1]["content"]
+            )
+        return _ensure_iterabledatasetdict({"train": train_ds})
+
+    # Final split (non-streaming)
     ds_dict = train_ds.train_test_split(test_size=0.05, seed=42)
     if lang is not None:
         ds_dict = ds_dict.filter(lambda row: lang in row["messages"][1]["content"])

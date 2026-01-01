@@ -1,4 +1,4 @@
-from datasets import DatasetDict, load_dataset
+from datasets import DatasetDict, IterableDatasetDict, load_dataset
 
 
 def _build_alpaca_prompt(instruction: str, input_text: str | None) -> str:
@@ -19,20 +19,23 @@ def _build_alpaca_prompt(instruction: str, input_text: str | None) -> str:
         return instruction
 
 
-def load_dataset_alpaca(dataset_name_or_path: str) -> DatasetDict:
+def load_dataset_alpaca(
+    dataset_name_or_path: str, streaming: bool = False
+) -> DatasetDict | IterableDatasetDict:
     """
     Load the Alpaca dataset (tatsu-lab/alpaca) and expose unified fields.
 
-    Returns a `DatasetDict` where each split contains:
-      - prompt:   Combined instruction (+ optional input), with clean formatting
-      - response: The target output (model answer)
+    Returns a `DatasetDict` (or `IterableDatasetDict` if streaming) where each split contains:
+      - messages: List of message dicts with role and content
 
     Parameters
     ----------
     dataset_name_or_path : str
         Usually "tatsu-lab/alpaca" or a local path.
+    streaming : bool
+        If True, return an IterableDatasetDict for memory-efficient loading.
     """
-    dataset = load_dataset(dataset_name_or_path)
+    dataset = load_dataset(dataset_name_or_path, streaming=streaming)
 
     def map_fn(example):
         prompt = _build_alpaca_prompt(
@@ -46,12 +49,18 @@ def load_dataset_alpaca(dataset_name_or_path: str) -> DatasetDict:
             ]
         }
 
-    dataset = dataset.map(
-        map_fn, remove_columns=dataset["train"].column_names, num_proc=4
-    )
-    # make train test split
-    dataset = dataset["train"].train_test_split(test_size=0.05, seed=42)
-    return dataset
+    if streaming:
+        # For streaming, we can't get column_names directly, so specify them
+        remove_cols = ["instruction", "input", "output", "text"]
+        dataset = dataset.map(map_fn, remove_columns=remove_cols)
+        return IterableDatasetDict({"train": dataset["train"]})
+    else:
+        dataset = dataset.map(
+            map_fn, remove_columns=dataset["train"].column_names, num_proc=4
+        )
+        # make train test split
+        dataset = dataset["train"].train_test_split(test_size=0.05, seed=42)
+        return dataset
 
 
 if __name__ == "__main__":

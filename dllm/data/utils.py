@@ -15,18 +15,24 @@ logger = get_default_logger(__name__)
 
 
 def load_sft_dataset(
-    dataset_args: str, load_preprocessed_data: bool = False
-) -> DatasetDict:
+    dataset_args: str,
+    streaming: bool = False,
+    load_preprocessed_data: bool = False,
+) -> DatasetDict | IterableDatasetDict:
     """
     Examples of dataset_args:
       - "tatsu-lab/alpaca"
       - "OpenCoder-LLM/opc-sft-stage2[name:educational_instruct,lang:python]"
       - "tatsu-lab/alpaca[train:5000]"
       - "tatsu-lab/alpaca[train:5000] + HuggingFaceH4/ultrachat_200k[train:5000]"
+
+    When streaming=True, returns an IterableDatasetDict that loads data on-demand.
     """
     from dllm.data.alpaca import load_dataset_alpaca
     from dllm.data.opc import load_dataset_opc_sft
 
+    if streaming:
+        logger.info("Loading SFT dataset in streaming mode.")
     specs = [p.strip() for p in re.split(r"[|+]", dataset_args) if p.strip()]
     all_parts = []
 
@@ -42,39 +48,60 @@ def load_sft_dataset(
             ds = load_from_disk(dataset_name_or_path)
         # Implement your customized dataset here
         elif _match(dataset_name_or_path, "tatsu-lab/alpaca"):
-            ds = load_dataset_alpaca(dataset_name_or_path)
+            # Alpaca doesn't support streaming natively, load normally
+            ds = load_dataset_alpaca(dataset_name_or_path, streaming=streaming)
         elif _match(dataset_name_or_path, "allenai/tulu-3-sft-mixture"):
-            ds = load_dataset(dataset_name_or_path)
-            ds = ds["train"].train_test_split(test_size=0.05, seed=42)
+            ds = load_dataset(dataset_name_or_path, streaming=streaming)
+            if not streaming:
+                ds = ds["train"].train_test_split(test_size=0.05, seed=42)
+            # For streaming, we just use train split (no split operation available)
         elif _match(dataset_name_or_path, "HuggingFaceTB/smoltalk"):
             name = kvs.pop("name", "all")
-            ds = load_dataset(dataset_name_or_path, name=name)
+            ds = load_dataset(dataset_name_or_path, name=name, streaming=streaming)
         elif _match(dataset_name_or_path, "OpenCoder-LLM/opc-sft-stage1") or _match(
             dataset_name_or_path, "OpenCoder-LLM/opc-sft-stage2"
         ):
             name = kvs.pop("name", None)
             lang = kvs.pop("lang", None)
-            ds = load_dataset_opc_sft(dataset_name_or_path, name=name, lang=lang)
+            ds = load_dataset_opc_sft(
+                dataset_name_or_path, name=name, lang=lang, streaming=streaming
+            )
         elif _match(dataset_name_or_path, "HuggingFaceH4/ultrachat_200k"):
-            ds = load_dataset(dataset_name_or_path)
-            ds = DatasetDict({"train": ds["train_sft"], "test": ds["test_sft"]})
+            ds = load_dataset(dataset_name_or_path, streaming=streaming)
+            if streaming:
+                ds = IterableDatasetDict(
+                    {"train": ds["train_sft"], "test": ds["test_sft"]}
+                )
+            else:
+                ds = DatasetDict({"train": ds["train_sft"], "test": ds["test_sft"]})
         else:
-            ds = load_dataset(dataset_name_or_path)
+            ds = load_dataset(dataset_name_or_path, streaming=streaming)
 
-        # Normalize to DatasetDict and apply per-split limits
-        ds = _ensure_datasetdict(ds)
-        ds = _truncate_datasetdict(ds, kvs)
+        # Normalize and apply per-split limits
+        if streaming:
+            ds = _ensure_iterabledatasetdict(ds)
+            ds = _truncate_iterabledatasetdict(ds, kvs)
+        else:
+            ds = _ensure_datasetdict(ds)
+            ds = _truncate_datasetdict(ds, kvs)
         all_parts.append(ds)
 
-    # If only one part, return as DatasetDict
+    # If only one part, return directly
     if len(all_parts) == 1:
+        if streaming:
+            return _ensure_iterabledatasetdict(all_parts[0])
         return _ensure_datasetdict(all_parts[0])
 
-    # Merge all parts into a single DatasetDict
+    # Merge all parts
     merged = all_parts[0]
-    for part in all_parts[1:]:
-        merged = _merge_datasetdicts(merged, part)
-    return _ensure_datasetdict(merged)
+    if streaming:
+        for part in all_parts[1:]:
+            merged = _merge_iterabledatasetdicts(merged, part)
+        return _ensure_iterabledatasetdict(merged)
+    else:
+        for part in all_parts[1:]:
+            merged = _merge_datasetdicts(merged, part)
+        return _ensure_datasetdict(merged)
 
 
 def load_pt_dataset(

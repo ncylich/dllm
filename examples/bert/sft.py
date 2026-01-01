@@ -11,6 +11,12 @@ Local users
         --config_file scripts/accelerate_configs/zero2.yaml \
         examples/bert/sft.py
 
+- TPU with streaming (memory-efficient, for large datasets):
+    accelerate launch \
+        --config_file scripts/accelerate_configs/tpu.yaml \
+        examples/bert/sft.py \
+        --streaming True --max_steps 10000
+
 Slurm users
 # Note: run `mkdir logs` before running sbatch; and adjust
 #       `partition` and `quotatype` in `scripts/train.slurm.sh` for your cluster.
@@ -48,6 +54,7 @@ class ModelArguments(dllm.utils.ModelArguments):
 class DataArguments(dllm.utils.DataArguments):
     dataset_args: str = "tatsu-lab/alpaca"
     max_length: int = 512
+    streaming: bool = False
     load_preprocessed_data: bool = False
     mask_prompt_loss: bool = field(
         default=True,
@@ -83,6 +90,7 @@ def train():
     with accelerate.PartialState().local_main_process_first():
         dataset = dllm.data.load_sft_dataset(
             data_args.dataset_args,
+            streaming=data_args.streaming,
             load_preprocessed_data=data_args.load_preprocessed_data,
         )
         if not data_args.load_preprocessed_data:
@@ -91,13 +99,23 @@ def train():
                 tokenizer=tokenizer,
                 mask_prompt_loss=data_args.mask_prompt_loss,
             )
+            # For streaming, remove 'messages' column; for non-streaming, remove all original columns
+            if data_args.streaming:
+                remove_cols = ["messages"]
+            else:
+                remove_cols = dataset["train"].column_names
             dataset = dataset.map(
                 map_fn,
-                num_proc=data_args.num_proc,
-                desc="Mapping dataset to SFT format",
+                remove_columns=remove_cols,
+                **({} if data_args.streaming else {"num_proc": data_args.num_proc}),
+                **({} if data_args.streaming else {"desc": "Mapping dataset to SFT format"}),
             )
-        # truncate / filter long sequences if needed
-        dataset = dllm.utils.post_process_dataset(dataset, data_args)
+        # truncate / filter long sequences if needed (only for non-streaming)
+        if not data_args.streaming:
+            dataset = dllm.utils.post_process_dataset(dataset, data_args)
+        else:
+            # For streaming, shuffle the dataset
+            dataset = dataset.shuffle(seed=training_args.seed)
 
     # ----- Training --------------------------------------------------------------
     accelerate.PartialState().wait_for_everyone()
