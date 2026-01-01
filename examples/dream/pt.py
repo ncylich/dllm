@@ -22,12 +22,8 @@ Slurm users
         --script_path "examples/dream/pt.py"
 """
 
-# Prevent XLA runtime initialization at import time (required for TPU + xmp.spawn)
-import os
-
-os.environ.setdefault("PJRT_SELECT_DEFAULT_DEVICE", "0")
-
 import functools
+import os
 from dataclasses import dataclass, field
 
 import accelerate
