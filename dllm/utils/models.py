@@ -28,10 +28,13 @@ def get_model(
     load_in_4bit = getattr(model_args, "load_in_4bit", False)
     attn_implementation = getattr(model_args, "attn_implementation", None)
 
-    # Device map: skip when ZeRO-3
+    # Device map: skip when ZeRO-3 or TPU (XLA handles device placement)
+    from dllm.utils.device import is_tpu_available
+
     device_map = (
         {"": accelerate.PartialState().local_process_index}
         if not transformers.modeling_utils.is_deepspeed_zero3_enabled()
+        and not is_tpu_available()
         and torch.cuda.is_available()
         else None
     )

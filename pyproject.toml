@@ -33,6 +33,9 @@ optional = [
     "vllm==0.8.5.post1",
     "flash-attn==2.8.3",
 ]
+tpu = [
+    "torch_xla>=2.5.0",
+]
 
 [tool.black]
 line-length = 88

@@ -59,9 +59,18 @@ def init_device_context_manager(device: str | torch.device | None = None):
             idx = PartialState().local_process_index
         except Exception:
             idx = 0
-        device = f"cuda:{idx}" if torch.cuda.is_available() else "cpu"
+        from dllm.utils.device import get_device_string
+
+        device = get_device_string(idx)
     elif isinstance(device, int):
-        device = f"cuda:{device}"
+        from dllm.utils.device import get_device_string
+
+        device = get_device_string(device)
+
+    # XLA/TPU doesn't support set_default_device well, skip for TPU
+    if device == "xla":
+        yield
+        return
 
     try:
         torch.set_default_device(device)

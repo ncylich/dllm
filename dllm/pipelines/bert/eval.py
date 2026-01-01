@@ -323,7 +323,9 @@ class BERTEvalHarness(LM):
                 logprob = self.get_loglikelihood(context, continuation)
                 isgreedy = self.suffix_greedy_prediction(context, continuation)
                 out.append((logprob, isgreedy))
-        torch.cuda.empty_cache()
+        from dllm.utils.device import empty_cache
+
+        empty_cache()
         return out
 
     def loglikelihood_rolling(self, requests: list[Instance]) -> list[float]:

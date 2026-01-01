@@ -208,7 +208,7 @@ class A2DGPT2Model(transformers.GPT2Model):
         all_hidden_states = () if output_hidden_states else None
         for i, block in enumerate(self.h):
             # Model parallel
-            if self.model_parallel:
+            if self.model_parallel and torch.cuda.is_available():
                 torch.cuda.set_device(hidden_states.device)
                 if isinstance(head_mask, torch.Tensor):
                     head_mask = head_mask.to(hidden_states.device)

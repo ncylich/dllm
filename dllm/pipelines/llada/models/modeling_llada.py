@@ -22,7 +22,6 @@ from dataclasses import fields
 from typing import List, Optional, Tuple, Union
 
 import torch
-import torch.backends.cuda
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import einsum
@@ -194,7 +193,9 @@ def _non_meta_init_device(config: ModelConfig) -> torch.device:
     if config.init_device is not None and config.init_device != "meta":
         return torch.device(config.init_device)
     else:
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        from dllm.utils.device import get_device
+
+        return get_device()
 
 
 class Dropout(nn.Dropout):
@@ -574,9 +575,13 @@ class LLaDABlock(nn.Module):
         self.flash_attn_func = None
         if config.flash_attention:
             try:
-                from flash_attn import flash_attn_func  # type: ignore
+                # flash_attn is CUDA-only, skip on TPU/XLA
+                from dllm.utils.device import is_tpu_available
 
-                self.flash_attn_func = flash_attn_func
+                if not is_tpu_available():
+                    from flash_attn import flash_attn_func  # type: ignore
+
+                    self.flash_attn_func = flash_attn_func
             except ModuleNotFoundError:
                 pass
 
@@ -1113,8 +1118,10 @@ class LLaDAModel(LLaDAPreTrainedModel):
         ):
             raise Exception("n layers must be divisible by block group size")
 
-        torch.backends.cuda.enable_flash_sdp(True)
-        torch.backends.cuda.enable_mem_efficient_sdp(False)  # this is super slow so make sure torch won't use it
+        # Configure CUDA SDPA backends (skip on TPU/XLA)
+        if torch.cuda.is_available():
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_mem_efficient_sdp(False)  # this is super slow so make sure torch won't use it
 
         self.transformer = nn.ModuleDict(
             dict(
