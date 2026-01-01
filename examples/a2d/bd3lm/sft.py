@@ -26,7 +26,11 @@ Slurm users
         --script_path "examples/a2d/bd3lm/sft.py"
 """
 
+# Prevent XLA runtime initialization at import time (required for TPU + xmp.spawn)
 import os
+
+os.environ.setdefault("PJRT_SELECT_DEFAULT_DEVICE", "0")
+
 from dataclasses import dataclass, field
 from functools import partial
 

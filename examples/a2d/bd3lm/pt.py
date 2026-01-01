@@ -26,8 +26,12 @@ Slurm users
         --script_path "examples/bd3lm/mdlm/pt.py"
 """
 
-import functools
+# Prevent XLA runtime initialization at import time (required for TPU + xmp.spawn)
 import os
+
+os.environ.setdefault("PJRT_SELECT_DEFAULT_DEVICE", "0")
+
+import functools
 from dataclasses import dataclass, field
 
 import accelerate
