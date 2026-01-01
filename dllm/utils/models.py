@@ -56,6 +56,13 @@ def get_model(
         "config": config,
     }
 
+    # Disable torch.compile on TPU (TorchDynamo doesn't work well with XLA)
+    if is_tpu_available():
+        import torch._dynamo
+
+        torch._dynamo.config.suppress_errors = True
+        torch._dynamo.disable()
+
     try:
         model = transformers.AutoModelForMaskedLM.from_pretrained(
             model_name_or_path, **params
