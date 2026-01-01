@@ -152,5 +152,7 @@ def train():
     )
 
 
+main = train  # alias for TPU launcher compatibility
+
 if __name__ == "__main__":
     train()
