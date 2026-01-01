@@ -56,13 +56,6 @@ def get_model(
         "config": config,
     }
 
-    # Disable torch.compile on TPU (TorchDynamo doesn't work well with XLA)
-    if is_tpu_available():
-        import torch._dynamo
-
-        torch._dynamo.config.suppress_errors = True
-        torch._dynamo.reset()
-
     try:
         model = transformers.AutoModelForMaskedLM.from_pretrained(
             model_name_or_path, **params
@@ -70,16 +63,17 @@ def get_model(
     except Exception:
         model = transformers.AutoModel.from_pretrained(model_name_or_path, **params)
 
-    # Unwrap torch.compile'd methods on TPU (e.g., ModernBERT's compiled_embeddings)
+    # Fix ModernBERT when torch.compile is disabled (e.g., on TPU)
+    # When TORCH_COMPILE_DISABLE=1, compiled_embeddings/compiled_head become unbound methods
     if is_tpu_available():
         for name in ["compiled_embeddings", "compiled_head"]:
             if hasattr(model, name):
-                compiled_fn = getattr(model, name)
-                # torch.compile wraps the original function; extract and replace
-                if hasattr(compiled_fn, "_torchdynamo_orig_callable"):
-                    setattr(model, name, compiled_fn._torchdynamo_orig_callable)
-                elif hasattr(compiled_fn, "__wrapped__"):
-                    setattr(model, name, compiled_fn.__wrapped__)
+                method = getattr(model, name)
+                # Bind the method to self if it's not already callable with just input
+                if callable(method) and not hasattr(method, "__self__"):
+                    import types
+
+                    setattr(model, name, types.MethodType(method, model))
 
     # --- if quantized, prepare for LoRA / QLoRA training ---
     if load_in_4bit and quant_config is not None:

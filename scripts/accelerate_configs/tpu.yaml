@@ -4,12 +4,12 @@ distributed_type: XLA
 downcast_bf16: 'no'
 machine_rank: 0
 main_training_function: main
-mixed_precision: bf16
 num_machines: 1
 num_processes: 8
 rdzv_backend: static
 same_network: true
-tpu_env: []
+tpu_env:
+  - TORCH_COMPILE_DISABLE=1
 tpu_use_cluster: false
 tpu_use_sudo: false
 use_cpu: false
