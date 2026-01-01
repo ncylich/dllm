@@ -61,7 +61,7 @@ def get_model(
         import torch._dynamo
 
         torch._dynamo.config.suppress_errors = True
-        torch._dynamo.disable()
+        torch._dynamo.reset()
 
     try:
         model = transformers.AutoModelForMaskedLM.from_pretrained(
@@ -69,6 +69,17 @@ def get_model(
         )
     except Exception:
         model = transformers.AutoModel.from_pretrained(model_name_or_path, **params)
+
+    # Unwrap torch.compile'd methods on TPU (e.g., ModernBERT's compiled_embeddings)
+    if is_tpu_available():
+        for name in ["compiled_embeddings", "compiled_head"]:
+            if hasattr(model, name):
+                compiled_fn = getattr(model, name)
+                # torch.compile wraps the original function; extract and replace
+                if hasattr(compiled_fn, "_torchdynamo_orig_callable"):
+                    setattr(model, name, compiled_fn._torchdynamo_orig_callable)
+                elif hasattr(compiled_fn, "__wrapped__"):
+                    setattr(model, name, compiled_fn.__wrapped__)
 
     # --- if quantized, prepare for LoRA / QLoRA training ---
     if load_in_4bit and quant_config is not None:
