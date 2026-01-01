@@ -70,6 +70,11 @@ class TrainingArguments(transformers.TrainingArguments):
 
     def __post_init__(self):
         super().__post_init__()
+        # Disable pin_memory on TPU (it's a CUDA-only optimization)
+        from dllm.utils.device import is_tpu_available
+
+        if is_tpu_available():
+            self.dataloader_pin_memory = False
         if self.group_by_length:
             logger.info(
                 "training_args.group_by_length=True: preprocessing "
