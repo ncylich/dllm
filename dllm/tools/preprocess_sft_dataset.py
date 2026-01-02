@@ -31,7 +31,7 @@ class ScriptArguments:
     mask_prompt_loss: bool = True  # Mask prompt tokens in labels with -100
     num_proc: int = 32
     remove_columns: bool = False
-    max_length: int = None  # If set, filter samples where prompt_len > max_length and truncate to max_length
+    max_length: int | None = None  # If set, filter samples where prompt_len > max_length and truncate to max_length
     truncation: str = "right"  # "right" or "filter" - how to handle sequences longer than max_length
 
     def __post_init__(self):
