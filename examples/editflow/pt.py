@@ -113,7 +113,8 @@ def train(
             **({} if data_args.streaming else {"desc": "Mapping dataset to PT format"}),
         )
         if data_args.streaming:
-            dataset = dataset.shuffle(seed=training_args.seed)
+            # Use larger shuffle buffer for better randomization and prefetching
+            dataset = dataset.shuffle(seed=training_args.seed, buffer_size=10000)
 
     # ----- Training --------------------------------------------------------------
     accelerate.PartialState().wait_for_everyone()

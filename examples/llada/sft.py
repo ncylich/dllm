@@ -110,7 +110,8 @@ def train():
         else:
             # For streaming, truncate and shuffle the dataset
             dataset = dllm.utils.post_process_dataset_streaming(dataset, data_args)
-            dataset = dataset.shuffle(seed=training_args.seed)
+            # Use larger shuffle buffer for better randomization and prefetching
+            dataset = dataset.shuffle(seed=training_args.seed, buffer_size=10000)
 
     # ----- Auto-compute max_steps for streaming -----------------------------------
     if data_args.streaming and training_args.max_steps <= 0:

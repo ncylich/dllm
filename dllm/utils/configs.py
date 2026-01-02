@@ -96,6 +96,21 @@ class TrainingArguments(transformers.TrainingArguments):
 
         if is_tpu_available():
             self.dataloader_pin_memory = False
+            # Use multiple dataloader workers for async data loading on TPU
+            # This helps overlap data preprocessing with TPU compute
+            if self.dataloader_num_workers == 0:
+                self.dataloader_num_workers = 4
+                logger.info(
+                    "TPU detected: setting dataloader_num_workers=4 for async data loading."
+                )
+            # Drop last incomplete batch to ensure consistent tensor shapes
+            # (reduces XLA recompilation)
+            if not self.dataloader_drop_last:
+                self.dataloader_drop_last = True
+                logger.info(
+                    "TPU detected: enabling dataloader_drop_last=True to avoid "
+                    "recompilation from variable batch sizes."
+                )
         if self.group_by_length:
             logger.info(
                 "training_args.group_by_length=True: preprocessing "

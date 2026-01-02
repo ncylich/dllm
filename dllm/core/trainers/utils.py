@@ -3,6 +3,8 @@ import math
 import torch
 import transformers
 
+from dllm.utils.device import is_tpu_available
+
 
 class EpochPPLMeter(transformers.TrainerCallback):
     """
@@ -14,6 +16,11 @@ class EpochPPLMeter(transformers.TrainerCallback):
           * on_epoch_begin: reset train accumulators
           * on_epoch_end: finalize+log train PPL
           * on_evaluate:   finalize+log eval  PPL (one per evaluate call)
+
+    TPU Optimization:
+      When running on TPU, accumulates tensors on-device to avoid per-step
+      host sync which kills XLA performance. Only syncs to CPU at epoch/eval
+      boundaries.
     """
 
     def __init__(
@@ -25,7 +32,15 @@ class EpochPPLMeter(transformers.TrainerCallback):
         self.trainer = trainer
         self.train_prefix = train_prefix
         self.eval_prefix = eval_prefix
+        self._is_tpu = is_tpu_available()
 
+        # For TPU: accumulate on-device tensors (initialized lazily)
+        self._train_nll_tensor = None
+        self._train_tok_tensor = None
+        self._eval_nll_tensor = None
+        self._eval_tok_tensor = None
+
+        # For non-TPU: use float accumulators (original behavior)
         self._train_nll_sum = 0.0
         self._train_token_cnt = 0.0
         self._eval_nll_sum = 0.0
@@ -35,25 +50,51 @@ class EpochPPLMeter(transformers.TrainerCallback):
         if split == "train":
             self._train_nll_sum = 0.0
             self._train_token_cnt = 0.0
+            self._train_nll_tensor = None
+            self._train_tok_tensor = None
         elif split == "eval":
             self._eval_nll_sum = 0.0
             self._eval_token_cnt = 0.0
+            self._eval_nll_tensor = None
+            self._eval_tok_tensor = None
         else:
             raise ValueError(f"Unknown split={split}")
 
     def update(self, split: str, nll_sum: torch.Tensor, token_cnt: torch.Tensor) -> None:
-        # detach -> float64 -> python float
-        nll_sum_f = float(nll_sum.detach().double().cpu().item())
-        tok_cnt_f = float(token_cnt.detach().double().cpu().item())
+        if self._is_tpu:
+            # TPU: accumulate on-device to avoid per-step sync
+            nll_detached = nll_sum.detach().double()
+            tok_detached = token_cnt.detach().double()
 
-        if split == "train":
-            self._train_nll_sum += nll_sum_f
-            self._train_token_cnt += tok_cnt_f
-        elif split == "eval":
-            self._eval_nll_sum += nll_sum_f
-            self._eval_token_cnt += tok_cnt_f
+            if split == "train":
+                if self._train_nll_tensor is None:
+                    self._train_nll_tensor = nll_detached.clone()
+                    self._train_tok_tensor = tok_detached.clone()
+                else:
+                    self._train_nll_tensor = self._train_nll_tensor + nll_detached
+                    self._train_tok_tensor = self._train_tok_tensor + tok_detached
+            elif split == "eval":
+                if self._eval_nll_tensor is None:
+                    self._eval_nll_tensor = nll_detached.clone()
+                    self._eval_tok_tensor = tok_detached.clone()
+                else:
+                    self._eval_nll_tensor = self._eval_nll_tensor + nll_detached
+                    self._eval_tok_tensor = self._eval_tok_tensor + tok_detached
+            else:
+                raise ValueError(f"Unknown split={split}")
         else:
-            raise ValueError(f"Unknown split={split}")
+            # Non-TPU: original behavior with immediate CPU transfer
+            nll_sum_f = float(nll_sum.detach().double().cpu().item())
+            tok_cnt_f = float(token_cnt.detach().double().cpu().item())
+
+            if split == "train":
+                self._train_nll_sum += nll_sum_f
+                self._train_token_cnt += tok_cnt_f
+            elif split == "eval":
+                self._eval_nll_sum += nll_sum_f
+                self._eval_token_cnt += tok_cnt_f
+            else:
+                raise ValueError(f"Unknown split={split}")
 
     def _finalize(self, split: str):
         """
@@ -64,26 +105,54 @@ class EpochPPLMeter(transformers.TrainerCallback):
         Returns (mean_nll, ppl) as python floats, or (None, None) if no tokens.
         Also resets that split after finalizing.
         """
-        if split == "train":
-            local_nll, local_tok = self._train_nll_sum, self._train_token_cnt
-            self.reset("train")
-        elif split == "eval":
-            local_nll, local_tok = self._eval_nll_sum, self._eval_token_cnt
-            self.reset("eval")
+        if self._is_tpu:
+            # TPU path: get accumulated tensors and sync to CPU only now
+            if split == "train":
+                nll_tensor = self._train_nll_tensor
+                tok_tensor = self._train_tok_tensor
+            elif split == "eval":
+                nll_tensor = self._eval_nll_tensor
+                tok_tensor = self._eval_tok_tensor
+            else:
+                raise ValueError(f"Unknown split={split}")
+
+            self.reset(split)
+
+            if nll_tensor is None or tok_tensor is None:
+                return None, None
+
+            # Stack into single tensor for all-reduce
+            stats = torch.stack([nll_tensor, tok_tensor])
+
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                torch.distributed.all_reduce(stats, op=torch.distributed.ReduceOp.SUM)
+
+            # Single sync to CPU at finalize time
+            total_nll = float(stats[0].cpu().item())
+            total_tok = float(stats[1].cpu().item())
         else:
-            raise ValueError(f"Unknown split={split}")
+            # Non-TPU path: original behavior
+            if split == "train":
+                local_nll, local_tok = self._train_nll_sum, self._train_token_cnt
+            elif split == "eval":
+                local_nll, local_tok = self._eval_nll_sum, self._eval_token_cnt
+            else:
+                raise ValueError(f"Unknown split={split}")
 
-        if local_tok <= 0.0:
-            return None, None
+            self.reset(split)
 
-        device = getattr(self.trainer.args, "device", torch.device("cpu"))
-        stats = torch.tensor([local_nll, local_tok], device=device, dtype=torch.float64)
+            if local_tok <= 0.0:
+                return None, None
 
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            torch.distributed.all_reduce(stats, op=torch.distributed.ReduceOp.SUM)
+            device = getattr(self.trainer.args, "device", torch.device("cpu"))
+            stats = torch.tensor([local_nll, local_tok], device=device, dtype=torch.float64)
 
-        total_nll = float(stats[0].item())
-        total_tok = float(stats[1].item())
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                torch.distributed.all_reduce(stats, op=torch.distributed.ReduceOp.SUM)
+
+            total_nll = float(stats[0].item())
+            total_tok = float(stats[1].item())
+
         if total_tok <= 0.0:
             return None, None
 
