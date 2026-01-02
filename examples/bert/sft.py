@@ -153,22 +153,33 @@ def train():
     # ----- Training --------------------------------------------------------------
     accelerate.PartialState().wait_for_everyone()
     logger.info("Start training...")
+
+    # Build data collator - use fixed-length padding on TPU to avoid XLA recompilation
+    base_collator = transformers.DataCollatorForSeq2Seq(
+        tokenizer,
+        return_tensors="pt",
+        padding=True,
+        label_pad_token_id=tokenizer.pad_token_id,  # finetune on padded <eos_token>
+    )
+    data_collator = dllm.utils.NoAttentionMaskWrapper(base_collator)
+    if dllm.utils.device.is_tpu_available():
+        logger.info(
+            f"TPU detected: using fixed-length padding to max_length={data_args.max_length}"
+        )
+        data_collator = dllm.utils.collators.FixedLengthPaddingWrapper(
+            data_collator,
+            max_length=data_args.max_length,
+            pad_token_id=tokenizer.pad_token_id,
+            label_pad_token_id=-100,
+        )
+
     trainer = dllm.core.trainers.MDLMTrainer(
         model=model,
         processing_class=tokenizer,
         train_dataset=dataset["train"],
         eval_dataset=eval_dataset,
         args=training_args,
-        data_collator=(
-            dllm.utils.NoAttentionMaskWrapper(  # padded <eos_token> should be visible
-                transformers.DataCollatorForSeq2Seq(
-                    tokenizer,
-                    return_tensors="pt",
-                    padding=True,
-                    label_pad_token_id=tokenizer.pad_token_id,  # finetune on padded <eos_token>
-                ),
-            )
-        ),
+        data_collator=data_collator,
     )
     trainer.train()
     trainer.save_model(os.path.join(training_args.output_dir, "checkpoint-final"))

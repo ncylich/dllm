@@ -128,6 +128,71 @@ class PrependBOSWrapper(CollatorWrapper):
 
 
 @dataclass
+class FixedLengthPaddingWrapper(CollatorWrapper):
+    """
+    Collator wrapper that pads all sequences to a fixed length.
+
+    This is critical for TPU/XLA training to avoid recompilation due to
+    variable tensor shapes. Pads input_ids, labels, and attention_mask
+    to max_length.
+
+    Attributes:
+        max_length: The fixed length to pad all sequences to.
+        pad_token_id: Token ID to use for padding input_ids.
+        label_pad_token_id: Token ID to use for padding labels (default: -100).
+    """
+
+    max_length: int = 1024
+    pad_token_id: int = 0
+    label_pad_token_id: int = -100
+
+    def after(self, outputs):
+        batch_size = outputs["input_ids"].shape[0]
+        current_length = outputs["input_ids"].shape[1]
+
+        if current_length >= self.max_length:
+            # Truncate if longer than max_length
+            for key in ["input_ids", "labels", "attention_mask"]:
+                if key in outputs:
+                    outputs[key] = outputs[key][:, : self.max_length]
+        else:
+            # Pad to max_length
+            pad_length = self.max_length - current_length
+
+            # Pad input_ids
+            input_pad = torch.full(
+                (batch_size, pad_length),
+                self.pad_token_id,
+                dtype=outputs["input_ids"].dtype,
+                device=outputs["input_ids"].device,
+            )
+            outputs["input_ids"] = torch.cat([outputs["input_ids"], input_pad], dim=1)
+
+            # Pad labels if present
+            if "labels" in outputs:
+                label_pad = torch.full(
+                    (batch_size, pad_length),
+                    self.label_pad_token_id,
+                    dtype=outputs["labels"].dtype,
+                    device=outputs["labels"].device,
+                )
+                outputs["labels"] = torch.cat([outputs["labels"], label_pad], dim=1)
+
+            # Pad attention_mask if present
+            if "attention_mask" in outputs:
+                attn_pad = torch.zeros(
+                    (batch_size, pad_length),
+                    dtype=outputs["attention_mask"].dtype,
+                    device=outputs["attention_mask"].device,
+                )
+                outputs["attention_mask"] = torch.cat(
+                    [outputs["attention_mask"], attn_pad], dim=1
+                )
+
+        return outputs
+
+
+@dataclass
 class RandomTruncateWrapper(CollatorWrapper):
     """
     Collator wrapper that randomly truncates sequences during training.
