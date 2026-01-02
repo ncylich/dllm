@@ -1,6 +1,8 @@
 # TPU config with profiling enabled
 # Use this to identify performance bottlenecks
 # Profile will be saved to /tmp/xla_profile/
+#
+# View traces with: tensorboard --logdir=/tmp/xla_profile
 compute_environment: LOCAL_MACHINE
 debug: false
 distributed_type: XLA
@@ -14,13 +16,12 @@ same_network: true
 tpu_env:
   - TORCH_COMPILE_DISABLE=1
   - DS_ACCELERATOR=cpu
-  # Enable XLA profiling
-  - XLA_HLO_DEBUG=1
-  - TPU_PROFILE_DURATION_MS=30000
-  - PROFILE_LOGDIR=/tmp/xla_profile
+  # Enable XLA profiling via callback (profiles steps 10-20 by default)
+  - DLLM_XLA_PROFILE=1
   # XLA performance optimizations
   - XLA_USE_SPMD=1
   - XLA_IR_DEBUG=0
+  - XLA_HLO_DEBUG=0
   # Reduce host-device sync overhead
   - XLA_SYNC_WAIT=0
   # Enable persistent compilation cache

@@ -1,4 +1,4 @@
 from . import bd3lm, mdlm
 from .bd3lm import BD3LMTrainer
 from .mdlm import MDLMTrainer
-from .utils import EpochPPLMeter, XLAMarkStepCallback
+from .utils import EpochPPLMeter, XLAMarkStepCallback, XLAProfilerCallback

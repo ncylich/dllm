@@ -18,7 +18,7 @@ import transformers
 from dllm.core.schedulers import BaseAlphaScheduler, LinearAlphaScheduler
 from dllm.utils.data import prepend_bos
 from dllm.utils.device import is_tpu_available
-from .utils import EpochPPLMeter, XLAMarkStepCallback
+from .utils import EpochPPLMeter, XLAMarkStepCallback, XLAProfilerCallback
 
 
 class MDLMTrainer(transformers.Trainer):
@@ -50,6 +50,8 @@ class MDLMTrainer(transformers.Trainer):
         # Add XLA mark_step callback for TPU to prevent unbounded graph growth
         if is_tpu_available():
             self.add_callback(XLAMarkStepCallback(mark_step_interval=1))
+            # Add XLA profiler callback (enabled via DLLM_XLA_PROFILE=1)
+            self.add_callback(XLAProfilerCallback())
 
     def _preprocess_inputs(self, inputs):
         if self.right_shift_logits:

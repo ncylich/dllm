@@ -1,9 +1,90 @@
 import math
+import os
 
 import torch
 import transformers
 
 from dllm.utils.device import is_tpu_available
+
+
+class XLAProfilerCallback(transformers.TrainerCallback):
+    """
+    Callback that profiles TPU execution using torch_xla's built-in profiler.
+
+    Enable via DLLM_XLA_PROFILE=1 environment variable.
+    Profiles steps between profile_start_step and profile_end_step.
+    Saves traces to profile_logdir (default: /tmp/xla_profile).
+
+    Usage:
+        DLLM_XLA_PROFILE=1 accelerate launch ...
+
+    View traces with:
+        tensorboard --logdir=/tmp/xla_profile
+    """
+
+    def __init__(
+        self,
+        profile_start_step: int = 10,
+        profile_end_step: int = 20,
+        profile_logdir: str = "/tmp/xla_profile",
+    ):
+        self.profile_start_step = profile_start_step
+        self.profile_end_step = profile_end_step
+        self.profile_logdir = profile_logdir
+        self._is_tpu = is_tpu_available()
+        self._profiler = None
+        self._profiling_active = False
+
+        # Check if profiling is enabled via env var
+        self._enabled = (
+            self._is_tpu
+            and os.environ.get("DLLM_XLA_PROFILE", "").lower() in ("1", "true", "yes")
+        )
+
+        if self._enabled:
+            print(f"[XLA Profiler] Enabled. Will profile steps {profile_start_step}-{profile_end_step}")
+            print(f"[XLA Profiler] Traces will be saved to: {profile_logdir}")
+            os.makedirs(profile_logdir, exist_ok=True)
+
+    def on_step_begin(self, args, state, control, **kwargs):
+        """Start profiling at the designated step."""
+        if not self._enabled:
+            return control
+
+        if state.global_step == self.profile_start_step and not self._profiling_active:
+            try:
+                import torch_xla.debug.profiler as xp
+
+                # Start the profiler server
+                self._server = xp.start_server(9012)
+                print("[XLA Profiler] Started profiler server on port 9012")
+                print(f"[XLA Profiler] Starting trace at step {state.global_step}")
+
+                # Start tracing
+                xp.trace_detached(
+                    "localhost:9012",
+                    self.profile_logdir,
+                    duration_ms=60000,  # 60 seconds max
+                )
+                self._profiling_active = True
+                print(f"[XLA Profiler] Trace started, saving to {self.profile_logdir}")
+
+            except Exception as e:
+                print(f"[XLA Profiler] Warning: Could not start profiler: {e}")
+
+        return control
+
+    def on_step_end(self, args, state, control, **kwargs):
+        """Stop profiling at the designated step."""
+        if not self._enabled:
+            return control
+
+        if state.global_step == self.profile_end_step and self._profiling_active:
+            print(f"[XLA Profiler] Profiling complete at step {state.global_step}")
+            print(f"[XLA Profiler] View traces with: tensorboard --logdir={self.profile_logdir}")
+            self._profiling_active = False
+
+        return control
 
 
 class XLAMarkStepCallback(transformers.TrainerCallback):
