@@ -31,23 +31,31 @@ class XLAProfilerCallback(transformers.TrainerCallback):
         self.profile_start_step = profile_start_step
         self.profile_end_step = profile_end_step
         self.profile_logdir = profile_logdir
-        self._is_tpu = is_tpu_available()
         self._profiler = None
         self._profiling_active = False
+        self._initialized = False
 
-        # Check if profiling is enabled via env var
-        self._enabled = (
-            self._is_tpu
-            and os.environ.get("DLLM_XLA_PROFILE", "").lower() in ("1", "true", "yes")
-        )
+        # Only check env var at init time - TPU check is done lazily
+        self._env_enabled = os.environ.get("DLLM_XLA_PROFILE", "").lower() in ("1", "true", "yes")
+        self._enabled = False  # Will be set True on first step if TPU available
 
-        if self._enabled:
-            print(f"[XLA Profiler] Enabled. Will profile steps {profile_start_step}-{profile_end_step}")
-            print(f"[XLA Profiler] Traces will be saved to: {profile_logdir}")
-            os.makedirs(profile_logdir, exist_ok=True)
+    def _lazy_init(self):
+        """Initialize profiler settings on first step when TPU runtime is available."""
+        if self._initialized:
+            return
+        self._initialized = True
+
+        if self._env_enabled and is_tpu_available():
+            self._enabled = True
+            print(f"[XLA Profiler] Enabled. Will profile steps {self.profile_start_step}-{self.profile_end_step}")
+            print(f"[XLA Profiler] Traces will be saved to: {self.profile_logdir}")
+            os.makedirs(self.profile_logdir, exist_ok=True)
 
     def on_step_begin(self, args, state, control, **kwargs):
         """Start profiling at the designated step."""
+        # Lazy init on first step when XLA runtime is available
+        self._lazy_init()
+
         if not self._enabled:
             return control
 
