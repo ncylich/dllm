@@ -135,6 +135,14 @@ def train():
         )
         training_args.group_by_length = False
 
+    # ----- Disable eval_strategy if no eval dataset available --------------------
+    eval_dataset = dataset.get("test", None)
+    if eval_dataset is None and training_args.eval_strategy != "no":
+        logger.warning(
+            "No eval dataset available, setting eval_strategy to 'no'."
+        )
+        training_args.eval_strategy = "no"
+
     # ----- Training --------------------------------------------------------------
     accelerate.PartialState().wait_for_everyone()
     logger.info("Start training...")
@@ -142,7 +150,7 @@ def train():
         model=model,
         processing_class=tokenizer,
         train_dataset=dataset["train"],
-        eval_dataset=dataset.get("test", None),
+        eval_dataset=eval_dataset,
         args=training_args,
         data_collator=(
             dllm.utils.NoAttentionMaskWrapper(  # padded <eos_token> should be visible
