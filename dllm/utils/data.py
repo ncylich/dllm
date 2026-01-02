@@ -176,18 +176,16 @@ def post_process_dataset_streaming(
     max_len = data_args.max_length
 
     if mode == "filter":
-        # Keep rows with len(input_ids) <= max_len (emulate .filter with generator map)
+        # Keep rows with len(input_ids) <= max_len
         def keep_if_short(row):
-            if (
+            return (
                 "input_ids" in row
                 and isinstance(row["input_ids"], list)
                 and len(row["input_ids"]) <= max_len
-            ):
-                yield row  # keep
-            # else: drop (yield nothing)
+            )
 
         return datasets.IterableDatasetDict(
-            {name: ds.map(keep_if_short) for name, ds in dataset.items()}
+            {name: ds.filter(keep_if_short) for name, ds in dataset.items()}
         )
 
     elif mode == "right":
@@ -198,16 +196,13 @@ def post_process_dataset_streaming(
 
             def keep_if_prompt_fits(row):
                 pl = row.get("prompt_len", None)
-                if isinstance(pl, int) and pl <= max_len:
-                    yield row  # keep
-                elif pl is None:
-                    # If a row lacks prompt_len but train had it, the non-streaming code would try to access it and fail.
-                    # Here we conservatively drop such rows to mirror "requires prompt_len <= max_len".
-                    return
-                # else: drop
+                # Keep if prompt_len <= max_len, or if prompt_len is not present
+                if pl is None:
+                    return True
+                return isinstance(pl, int) and pl <= max_len
 
             ds_out = datasets.IterableDatasetDict(
-                {name: ds.map(keep_if_prompt_fits) for name, ds in ds_out.items()}
+                {name: ds.filter(keep_if_prompt_fits) for name, ds in ds_out.items()}
             )
 
         # Then clip right (same clipping as clip_row)
