@@ -560,9 +560,7 @@ def compute_max_steps(
             from accelerate import PartialState
 
             num_devices = PartialState().num_processes
-            logger.info(f"DEBUG: PartialState().num_processes = {num_devices}")
-        except Exception as e:
-            logger.info(f"DEBUG: PartialState failed with {e}")
+        except Exception:
             try:
                 import torch
 
