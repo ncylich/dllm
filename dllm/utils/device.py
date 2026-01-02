@@ -115,6 +115,7 @@ def wrap_model_xla_fsdp(
     auto_wrap_policy: str = "transformer",
     reshard_after_forward: bool = True,
     compute_dtype: torch.dtype = torch.bfloat16,
+    gradient_checkpointing: bool = False,
 ) -> torch.nn.Module:
     """
     Wrap a model with XLA Fully Sharded Data Parallel (FSDP).
@@ -130,6 +131,8 @@ def wrap_model_xla_fsdp(
         reshard_after_forward: If True, enables ZeRO-3 (reshards params after forward).
             If False, uses ZeRO-2 (only shards grads/optimizer states).
         compute_dtype: Dtype for computation (typically bfloat16 on TPU).
+        gradient_checkpointing: If True, wrap each FSDP unit with checkpoint_module
+            to trade compute for memory (enables larger batch sizes).
 
     Returns:
         The FSDP-wrapped model.
@@ -145,8 +148,15 @@ def wrap_model_xla_fsdp(
         return model
 
     # Check if XLA FSDP is enabled via environment variable
-    if not os.environ.get("DLLM_XLA_FSDP", "").lower() in ("1", "true", "yes"):
+    xla_fsdp_enabled = os.environ.get("DLLM_XLA_FSDP", "").lower() in ("1", "true", "yes")
+    if not xla_fsdp_enabled:
+        print("[XLA FSDP] Not enabled (set DLLM_XLA_FSDP=1 to enable)")
         return model
+
+    # Check if gradient checkpointing is enabled via env var
+    gradient_checkpointing = gradient_checkpointing or os.environ.get(
+        "DLLM_XLA_GRADIENT_CHECKPOINTING", ""
+    ).lower() in ("1", "true", "yes")
 
     try:
         from functools import partial
@@ -154,7 +164,17 @@ def wrap_model_xla_fsdp(
         from torch_xla.distributed.fsdp import XlaFullyShardedDataParallel as FSDP
         from torch_xla.distributed.fsdp.wrap import transformer_auto_wrap_policy
 
-        print(f"[XLA FSDP] Wrapping model with FSDP (reshard_after_forward={reshard_after_forward})")
+        # Import checkpoint_module for gradient checkpointing
+        checkpoint_module = None
+        if gradient_checkpointing:
+            try:
+                from torch_xla.distributed.fsdp import checkpoint_module
+                print("[XLA FSDP] Gradient checkpointing enabled")
+            except ImportError:
+                print("[XLA FSDP] Warning: checkpoint_module not available, disabling gradient checkpointing")
+                gradient_checkpointing = False
+
+        print(f"[XLA FSDP] Wrapping model with FSDP (reshard_after_forward={reshard_after_forward}, gradient_checkpointing={gradient_checkpointing})")
 
         # Build auto-wrap policy if transformer layer class is provided
         if transformer_layer_cls is not None and auto_wrap_policy == "transformer":
@@ -162,14 +182,30 @@ def wrap_model_xla_fsdp(
                 transformer_auto_wrap_policy,
                 transformer_layer_cls={transformer_layer_cls},
             )
-            wrapped_model = FSDP(
-                model,
-                auto_wrap_policy=auto_wrap,
-                reshard_after_forward=reshard_after_forward,
-                compute_dtype=compute_dtype,
-            )
+
+            if gradient_checkpointing and checkpoint_module is not None:
+                # Wrap each FSDP unit with checkpoint_module for activation checkpointing
+                auto_wrapper_callable = lambda m, *args, **kwargs: FSDP(
+                    checkpoint_module(m), *args, **kwargs
+                )
+                wrapped_model = FSDP(
+                    model,
+                    auto_wrap_policy=auto_wrap,
+                    auto_wrapper_callable=auto_wrapper_callable,
+                    reshard_after_forward=reshard_after_forward,
+                    compute_dtype=compute_dtype,
+                )
+            else:
+                wrapped_model = FSDP(
+                    model,
+                    auto_wrap_policy=auto_wrap,
+                    reshard_after_forward=reshard_after_forward,
+                    compute_dtype=compute_dtype,
+                )
         else:
             # Wrap entire model
+            if gradient_checkpointing and checkpoint_module is not None:
+                model = checkpoint_module(model)
             wrapped_model = FSDP(
                 model,
                 reshard_after_forward=reshard_after_forward,
@@ -185,6 +221,70 @@ def wrap_model_xla_fsdp(
     except Exception as e:
         print(f"[XLA FSDP] Warning: Failed to wrap model: {e}")
         return model
+
+
+def patch_torch_checkpoint_for_xla() -> None:
+    """
+    Patch torch.utils.checkpoint to use XLA's checkpoint implementation on TPU.
+
+    Standard PyTorch checkpoint doesn't work correctly with XLA - it doesn't
+    reduce memory. This patches the checkpoint function to use torch_xla's
+    implementation which properly handles XLA's lazy execution model.
+
+    Call this once at the start of training on TPU before enabling gradient
+    checkpointing on the model.
+    """
+    if not is_tpu_available():
+        return
+
+    try:
+        import torch.utils.checkpoint as torch_ckpt
+        from torch_xla.utils.checkpoint import checkpoint as xla_checkpoint
+
+        # Store original for potential restoration
+        if not hasattr(torch_ckpt, "_original_checkpoint"):
+            torch_ckpt._original_checkpoint = torch_ckpt.checkpoint
+
+        # Replace with XLA version
+        torch_ckpt.checkpoint = xla_checkpoint
+        print("[XLA] Patched torch.utils.checkpoint to use XLA checkpoint")
+
+    except ImportError as e:
+        print(f"[XLA] Warning: Could not patch checkpoint: {e}")
+
+
+def enable_xla_gradient_checkpointing(model: "torch.nn.Module") -> None:
+    """
+    Enable gradient checkpointing for a model on TPU.
+
+    This patches PyTorch's checkpoint to use XLA's implementation and then
+    enables gradient checkpointing on the model.
+
+    Args:
+        model: A HuggingFace model that supports gradient checkpointing.
+    """
+    import os
+
+    if not is_tpu_available():
+        return
+
+    # Check if gradient checkpointing is enabled via env var
+    if not os.environ.get("DLLM_XLA_GRADIENT_CHECKPOINTING", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return
+
+    # Patch checkpoint function to use XLA version
+    patch_torch_checkpoint_for_xla()
+
+    # Enable gradient checkpointing on the model
+    if hasattr(model, "gradient_checkpointing_enable"):
+        model.gradient_checkpointing_enable()
+        print("[XLA] Gradient checkpointing enabled on model")
+    else:
+        print("[XLA] Warning: Model does not support gradient_checkpointing_enable()")
 
 
 def get_xla_fsdp_layer_cls(model_name_or_path: str) -> type | None:

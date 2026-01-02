@@ -21,6 +21,8 @@ same_network: true
 tpu_env:
   # Enable XLA FSDP (ZeRO-3 style sharding)
   - DLLM_XLA_FSDP=1
+  # Enable gradient checkpointing to reduce activation memory (allows larger batches)
+  # - DLLM_XLA_GRADIENT_CHECKPOINTING=1
   - TORCH_COMPILE_DISABLE=1
   - DS_ACCELERATOR=cpu
   # XLA performance optimizations
