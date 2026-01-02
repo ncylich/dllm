@@ -39,13 +39,15 @@ class XLAProfilerCallback(transformers.TrainerCallback):
         self._env_enabled = os.environ.get("DLLM_XLA_PROFILE", "").lower() in ("1", "true", "yes")
         self._enabled = False  # Will be set True on first step if TPU available
 
-    def _lazy_init(self):
+    def _lazy_init(self, args):
         """Initialize profiler settings on first step when TPU runtime is available."""
         if self._initialized:
             return
         self._initialized = True
 
-        if self._env_enabled and is_tpu_available():
+        # Only enable profiler on main process to avoid port conflicts
+        is_main_process = getattr(args, "local_rank", 0) in (-1, 0)
+        if self._env_enabled and is_tpu_available() and is_main_process:
             self._enabled = True
             print(f"[XLA Profiler] Enabled. Will profile steps {self.profile_start_step}-{self.profile_end_step}")
             print(f"[XLA Profiler] Traces will be saved to: {self.profile_logdir}")
@@ -54,7 +56,7 @@ class XLAProfilerCallback(transformers.TrainerCallback):
     def on_step_begin(self, args, state, control, **kwargs):
         """Start profiling at the designated step."""
         # Lazy init on first step when XLA runtime is available
-        self._lazy_init()
+        self._lazy_init(args)
 
         if not self._enabled:
             return control
