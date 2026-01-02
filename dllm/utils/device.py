@@ -257,8 +257,8 @@ def enable_xla_gradient_checkpointing(model: "torch.nn.Module") -> None:
     """
     Enable gradient checkpointing for a model on TPU.
 
-    This patches PyTorch's checkpoint to use XLA's implementation and then
-    enables gradient checkpointing on the model.
+    This uses torch_xla's checkpoint implementation which properly handles
+    XLA's lazy execution model, unlike PyTorch's standard checkpoint.
 
     Args:
         model: A HuggingFace model that supports gradient checkpointing.
@@ -276,15 +276,26 @@ def enable_xla_gradient_checkpointing(model: "torch.nn.Module") -> None:
     ):
         return
 
-    # Patch checkpoint function to use XLA version
-    patch_torch_checkpoint_for_xla()
+    try:
+        from torch_xla.utils.checkpoint import checkpoint as xla_checkpoint
 
-    # Enable gradient checkpointing on the model
-    if hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
-        print("[XLA] Gradient checkpointing enabled on model")
-    else:
-        print("[XLA] Warning: Model does not support gradient_checkpointing_enable()")
+        # Enable gradient checkpointing with XLA's checkpoint function
+        # This directly passes the XLA checkpoint to the model instead of
+        # patching torch.utils.checkpoint (which doesn't work because HF
+        # models cache the function reference)
+        if hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+            # Override the checkpointing function with XLA's version
+            # HuggingFace stores this as _gradient_checkpointing_func
+            model._gradient_checkpointing_func = xla_checkpoint
+            print("[XLA] Gradient checkpointing enabled with XLA checkpoint")
+        else:
+            print("[XLA] Warning: Model does not support gradient_checkpointing_enable()")
+
+    except ImportError as e:
+        print(f"[XLA] Warning: Could not enable gradient checkpointing: {e}")
 
 
 def get_xla_fsdp_layer_cls(model_name_or_path: str) -> type | None:
