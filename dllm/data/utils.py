@@ -31,6 +31,13 @@ def load_sft_dataset(
     from dllm.data.alpaca import load_dataset_alpaca
     from dllm.data.opc import load_dataset_opc_sft
 
+    # For preprocessed data, load directly from disk without parsing
+    # (path may contain '+' from combined dataset names)
+    if load_preprocessed_data:
+        dataset_path = resolve_with_base_env(dataset_args, "BASE_DATASETS_DIR")
+        logger.info(f"Load preprocessed data from disk: {dataset_path}")
+        return load_from_disk(dataset_path)
+
     if streaming:
         logger.info("Loading SFT dataset in streaming mode.")
     specs = [p.strip() for p in re.split(r"[|+]", dataset_args) if p.strip()]
@@ -43,11 +50,8 @@ def load_sft_dataset(
             dataset_name_or_path, "BASE_DATASETS_DIR"
         )
 
-        if load_preprocessed_data:
-            logger.info("Load preprocessed data from disk.")
-            ds = load_from_disk(dataset_name_or_path)
         # Implement your customized dataset here
-        elif _match(dataset_name_or_path, "tatsu-lab/alpaca"):
+        if _match(dataset_name_or_path, "tatsu-lab/alpaca"):
             # Alpaca doesn't support streaming natively, load normally
             ds = load_dataset_alpaca(dataset_name_or_path, streaming=streaming)
         elif _match(dataset_name_or_path, "allenai/tulu-3-sft-mixture"):
