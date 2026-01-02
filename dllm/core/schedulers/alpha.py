@@ -49,8 +49,13 @@ class BaseAlphaScheduler:
             dtype=torch.float32,
             device=i.device if isinstance(i, torch.Tensor) else None,
         )
-        if not torch.all((0.0 <= i_t) & (i_t <= 1.0)):
-            raise ValueError(f"i={i} not in [0,1]")
+        # NOTE: Bounds checking with torch.all() causes device sync on TPU.
+        # Skip in production (training loop guarantees valid inputs).
+        # Enable via DLLM_DEBUG=1 for debugging if needed.
+        import os
+        if os.environ.get("DLLM_DEBUG"):
+            if not torch.all((0.0 <= i_t) & (i_t <= 1.0)):
+                raise ValueError(f"i={i} not in [0,1]")
         out = self._alpha(i_t)
         return out.item() if isinstance(i, float) else out
 
@@ -60,8 +65,11 @@ class BaseAlphaScheduler:
             dtype=torch.float32,
             device=i.device if isinstance(i, torch.Tensor) else None,
         )
-        if not torch.all((0.0 <= i_t) & (i_t <= 1.0)):
-            raise ValueError(f"i={i} not in [0,1]")
+        # NOTE: Bounds checking disabled for TPU performance (see alpha())
+        import os
+        if os.environ.get("DLLM_DEBUG"):
+            if not torch.all((0.0 <= i_t) & (i_t <= 1.0)):
+                raise ValueError(f"i={i} not in [0,1]")
         out = self._alpha_derivative(i_t)
         return out.item() if isinstance(i, float) else out
 
@@ -76,10 +84,13 @@ class BaseAlphaScheduler:
             dtype=torch.float32,
             device=s.device if isinstance(s, torch.Tensor) else None,
         )
-        if not torch.all((0.0 <= s_t) & (s_t < 1.0) & (0.0 < t_t) & (t_t <= 1.0)):
-            raise ValueError(f"(t={t}, s={s}) out of range")
-        if not torch.all(s_t < t_t):
-            raise ValueError(f"Require s < t elementwise, but got (t={t}, s={s})")
+        # NOTE: Bounds checking disabled for TPU performance (see alpha())
+        import os
+        if os.environ.get("DLLM_DEBUG"):
+            if not torch.all((0.0 <= s_t) & (s_t < 1.0) & (0.0 < t_t) & (t_t <= 1.0)):
+                raise ValueError(f"(t={t}, s={s}) out of range")
+            if not torch.all(s_t < t_t):
+                raise ValueError(f"Require s < t elementwise, but got (t={t}, s={s})")
         out = (1 - self(s_t)) / (1 - self(t_t))
         return out.item() if isinstance(t, float) and isinstance(s, float) else out
 

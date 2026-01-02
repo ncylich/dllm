@@ -88,13 +88,25 @@ def train():
     tokenizer = dllm.utils.get_tokenizer(model_args=model_args)
 
     # ----- Dataset ----------------------------------------------------------------
-    with accelerate.PartialState().local_main_process_first():
+    # For preprocessed data, skip the barrier - all processes can load simultaneously
+    # since it's read-only. The barrier can cause hangs on TPU with XLA distributed.
+    if data_args.load_preprocessed_data:
+        logger.info("Loading preprocessed dataset (no barrier)...")
         dataset = dllm.data.load_sft_dataset(
             data_args.dataset_args,
             streaming=data_args.streaming,
             load_preprocessed_data=data_args.load_preprocessed_data,
         )
-        if not data_args.load_preprocessed_data:
+        # truncate / filter if needed
+        if not data_args.streaming:
+            dataset = dllm.utils.post_process_dataset(dataset, data_args)
+    else:
+        with accelerate.PartialState().local_main_process_first():
+            dataset = dllm.data.load_sft_dataset(
+                data_args.dataset_args,
+                streaming=data_args.streaming,
+                load_preprocessed_data=data_args.load_preprocessed_data,
+            )
             map_fn = partial(
                 dllm.utils.default_mdlm_sft_map_fn,
                 tokenizer=tokenizer,
@@ -111,15 +123,15 @@ def train():
                 **({} if data_args.streaming else {"num_proc": data_args.num_proc}),
                 **({} if data_args.streaming else {"desc": "Mapping dataset to SFT format"}),
             )
-        # truncate / filter long sequences if needed
-        if not data_args.streaming:
-            dataset = dllm.utils.post_process_dataset(dataset, data_args)
-        else:
-            # For streaming, truncate and shuffle the dataset
-            dataset = dllm.utils.post_process_dataset_streaming(dataset, data_args)
-            # Use larger shuffle buffer for better randomization and prefetching
-            # buffer_size=10000 provides good balance of memory vs randomization
-            dataset = dataset.shuffle(seed=training_args.seed, buffer_size=10000)
+            # truncate / filter long sequences if needed
+            if not data_args.streaming:
+                dataset = dllm.utils.post_process_dataset(dataset, data_args)
+            else:
+                # For streaming, truncate and shuffle the dataset
+                dataset = dllm.utils.post_process_dataset_streaming(dataset, data_args)
+                # Use larger shuffle buffer for better randomization and prefetching
+                # buffer_size=10000 provides good balance of memory vs randomization
+                dataset = dataset.shuffle(seed=training_args.seed, buffer_size=10000)
 
     # ----- Auto-compute max_steps for streaming -----------------------------------
     if data_args.streaming and training_args.max_steps <= 0:
