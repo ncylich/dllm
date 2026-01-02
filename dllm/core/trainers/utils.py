@@ -39,9 +39,11 @@ class XLAMarkStepCallback(transformers.TrainerCallback):
 
     def on_substep_end(self, args, state, control, **kwargs):
         """Called at the end of each gradient accumulation substep."""
-        # Skip mark_step on substeps - the on_step_end mark_step is sufficient
-        # and calling it every substep can hurt throughput by fragmenting the graph.
-        # The graph will naturally execute at the optimizer step.
+        # Mark step after each substep to keep graph size bounded during
+        # gradient accumulation. Without this, the graph grows across all
+        # accumulation steps and can exceed TPU memory.
+        if self._xm is not None:
+            self._xm.mark_step()
         return control
 
 
