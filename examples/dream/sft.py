@@ -138,11 +138,12 @@ def train():
                 **({} if data_args.streaming else {"num_proc": data_args.num_proc}),
                 **({} if data_args.streaming else {"desc": "Mapping dataset to SFT format"}),
             )
-        # truncate / filter long sequences if needed (only for non-streaming)
+        # truncate / filter long sequences if needed
         if not data_args.streaming:
             dataset = dllm.utils.post_process_dataset(dataset, data_args)
         else:
-            # For streaming, shuffle the dataset
+            # For streaming, truncate and shuffle the dataset
+            dataset = dllm.utils.post_process_dataset_streaming(dataset, data_args)
             dataset = dataset.shuffle(seed=training_args.seed)
 
     # ----- Auto-compute max_steps for streaming -----------------------------------
