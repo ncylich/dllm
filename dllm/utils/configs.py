@@ -106,8 +106,10 @@ class TrainingArguments(transformers.TrainingArguments):
                     "TPU detected: enabling dataloader_drop_last=True to avoid "
                     "recompilation from variable batch sizes."
                 )
-        if self.group_by_length:
-            logger.info(
-                "training_args.group_by_length=True: preprocessing "
-                "may take some time after `trainer.train()` starts."
-            )
+            # Disable group_by_length on TPU - provides no benefit with pad_to_max_length
+            # and causes slow preprocessing on large datasets
+            if self.group_by_length:
+                self.group_by_length = False
+                logger.info(
+                    "TPU detected: disabling group_by_length (no benefit with fixed-length padding)."
+                )
