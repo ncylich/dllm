@@ -8,12 +8,14 @@ Large Language Diffusion Models:
 https://arxiv.org/abs/2502.09992
 """
 
+import os
 from typing import Any
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import transformers
+from torch.utils.data import DataLoader
 
 from dllm.core.schedulers import BaseAlphaScheduler, LinearAlphaScheduler
 from dllm.utils.data import prepend_bos
@@ -50,6 +52,51 @@ class MDLMTrainer(transformers.Trainer):
         # Add XLA mark_step callback for TPU to prevent unbounded graph growth
         if is_tpu_available():
             self.add_callback(XLAMarkStepCallback(mark_step_interval=1))
+
+        # Check if MpDeviceLoader should be used (DLLM_XLA_MP_DEVICE_LOADER=1)
+        self._use_mp_device_loader = (
+            is_tpu_available()
+            and os.environ.get("DLLM_XLA_MP_DEVICE_LOADER", "").lower() in ("1", "true", "yes")
+        )
+        if self._use_mp_device_loader:
+            print("[XLA] MpDeviceLoader enabled for async data prefetching")
+
+    def get_train_dataloader(self) -> DataLoader:
+        """
+        Override to wrap dataloader with MpDeviceLoader for async TPU prefetching.
+        """
+        dataloader = super().get_train_dataloader()
+
+        if self._use_mp_device_loader:
+            try:
+                import torch_xla.distributed.parallel_loader as pl
+
+                # MpDeviceLoader prefetches batches onto TPU asynchronously
+                # This hides CPU->TPU transfer latency
+                mp_loader = pl.MpDeviceLoader(dataloader, self.args.device)
+                print(f"[XLA] Wrapped train dataloader with MpDeviceLoader")
+                return mp_loader
+            except ImportError as e:
+                print(f"[XLA] Warning: Could not import MpDeviceLoader: {e}")
+
+        return dataloader
+
+    def get_eval_dataloader(self, eval_dataset=None) -> DataLoader:
+        """
+        Override to wrap eval dataloader with MpDeviceLoader for async TPU prefetching.
+        """
+        dataloader = super().get_eval_dataloader(eval_dataset)
+
+        if self._use_mp_device_loader:
+            try:
+                import torch_xla.distributed.parallel_loader as pl
+
+                mp_loader = pl.MpDeviceLoader(dataloader, self.args.device)
+                return mp_loader
+            except ImportError:
+                pass
+
+        return dataloader
 
     def _preprocess_inputs(self, inputs):
         if self.right_shift_logits:
