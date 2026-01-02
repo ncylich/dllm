@@ -97,9 +97,8 @@ def train():
             streaming=data_args.streaming,
             load_preprocessed_data=data_args.load_preprocessed_data,
         )
-        # truncate / filter if needed
-        if not data_args.streaming:
-            dataset = dllm.utils.post_process_dataset(dataset, data_args)
+        # Skip post_process_dataset for preprocessed data - it was already
+        # filtered/truncated during preprocessing
     else:
         with accelerate.PartialState().local_main_process_first():
             dataset = dllm.data.load_sft_dataset(

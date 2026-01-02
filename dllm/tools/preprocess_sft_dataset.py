@@ -31,6 +31,8 @@ class ScriptArguments:
     mask_prompt_loss: bool = True  # Mask prompt tokens in labels with -100
     num_proc: int = 32
     remove_columns: bool = False
+    max_length: int = None  # If set, filter samples where prompt_len > max_length and truncate to max_length
+    truncation: str = "right"  # "right" or "filter" - how to handle sequences longer than max_length
 
     def __post_init__(self):
         self.model_name_or_path = dllm.utils.resolve_with_base_env(
@@ -44,6 +46,8 @@ def preprocess_sft_dataset(
     output_dir: str,
     remove_columns: bool = False,
     num_proc: int = 32,
+    max_length: int = None,
+    truncation: str = "right",
 ):
     processed = dataset.map(
         map_fn,
@@ -53,6 +57,38 @@ def preprocess_sft_dataset(
         writer_batch_size=512,
         desc="offline preprocessing",
     )
+
+    # Apply max_length filtering/truncation if specified
+    if max_length is not None:
+        if truncation == "filter":
+            # Only keep samples where input_ids length <= max_length
+            processed = processed.filter(
+                lambda row: len(row["input_ids"]) <= max_length,
+                num_proc=num_proc,
+                desc=f"Filtering samples with length <= {max_length}",
+            )
+        elif truncation == "right":
+            # Filter out samples where prompt is longer than max_length (can't truncate prompt)
+            if "prompt_len" in processed["train"].column_names:
+                processed = processed.filter(
+                    lambda row: row["prompt_len"] <= max_length,
+                    num_proc=num_proc,
+                    desc=f"Filtering samples with prompt_len <= {max_length}",
+                )
+            # Truncate to max_length
+            def truncate_row(row):
+                row["input_ids"] = row["input_ids"][:max_length]
+                row["labels"] = row["labels"][:max_length]
+                if "attention_mask" in row:
+                    row["attention_mask"] = row["attention_mask"][:max_length]
+                return row
+
+            processed = processed.map(
+                truncate_row,
+                num_proc=num_proc,
+                desc=f"Truncating to max_length={max_length}",
+            )
+        print(f"[INFO] After max_length={max_length} processing: {processed}")
 
     # Keep only the three required columns to save space.
     if remove_columns:
@@ -110,6 +146,8 @@ def main():
         output_dir=args.output_dir,
         remove_columns=args.remove_columns,
         num_proc=args.num_proc,
+        max_length=args.max_length,
+        truncation=args.truncation,
     )
 
 
