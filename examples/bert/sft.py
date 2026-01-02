@@ -15,7 +15,8 @@ Local users
     accelerate launch \
         --config_file scripts/accelerate_configs/tpu.yaml \
         examples/bert/sft.py \
-        --streaming True --max_steps 10000
+        --streaming True --num_train_epochs 10
+    # max_steps is auto-computed from num_train_epochs for known datasets
 
 Slurm users
 # Note: run `mkdir logs` before running sbatch; and adjust
@@ -116,6 +117,22 @@ def train():
         else:
             # For streaming, shuffle the dataset
             dataset = dataset.shuffle(seed=training_args.seed)
+
+    # ----- Auto-compute max_steps for streaming -----------------------------------
+    if data_args.streaming and training_args.max_steps <= 0:
+        max_steps = dllm.data.compute_max_steps(
+            dataset_args=data_args.dataset_args,
+            num_epochs=training_args.num_train_epochs,
+            per_device_batch_size=training_args.per_device_train_batch_size,
+            gradient_accumulation_steps=training_args.gradient_accumulation_steps,
+        )
+        if max_steps is not None:
+            training_args.max_steps = max_steps
+        else:
+            raise ValueError(
+                "Streaming mode requires --max_steps to be set, "
+                "or dataset size must be known for auto-computation."
+            )
 
     # ----- Training --------------------------------------------------------------
     accelerate.PartialState().wait_for_everyone()

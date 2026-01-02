@@ -450,5 +450,141 @@ def _truncate_stream(ds: IterableDataset, n: int | None) -> IterableDataset:
     return ds.take(n)
 
 
+# Known dataset sizes (train split) for auto max_steps calculation
+KNOWN_DATASET_SIZES = {
+    "tatsu-lab/alpaca": 52_002,
+    "allenai/tulu-3-sft-mixture": 939_344,
+    "HuggingFaceTB/smoltalk": 1_780_786,  # "all" config
+    "HuggingFaceH4/ultrachat_200k": 207_865,
+    "OpenCoder-LLM/opc-sft-stage1": 4_500_000,  # approximate
+    "OpenCoder-LLM/opc-sft-stage2": 730_000,  # approximate
+}
+
+
+def get_dataset_size(dataset_args: str) -> int | None:
+    """
+    Estimate the total number of samples for a dataset_args string.
+    Returns None if size cannot be determined.
+
+    Supports:
+    - Known datasets from KNOWN_DATASET_SIZES
+    - Explicit limits like "dataset[train:5000]"
+    - Multiple datasets separated by + or |
+    """
+    specs = [p.strip() for p in re.split(r"[|+]", dataset_args) if p.strip()]
+    total = 0
+
+    for raw in specs:
+        dataset_name_or_path, kvs = parse_spec(raw)
+
+        # Check for explicit train limit
+        train_limit = kvs.get("train")
+        if train_limit is not None:
+            total += int(train_limit)
+            continue
+
+        # Look up known size
+        for known_name, size in KNOWN_DATASET_SIZES.items():
+            if _match(dataset_name_or_path, known_name):
+                total += size
+                break
+        else:
+            # Unknown dataset - try to fetch from HuggingFace Hub
+            try:
+                from huggingface_hub import HfApi
+
+                api = HfApi()
+                info = api.dataset_info(dataset_name_or_path)
+                # Try to get size from card_data if available
+                if hasattr(info, "card_data") and info.card_data:
+                    card = info.card_data
+                    if hasattr(card, "dataset_info") and card.dataset_info:
+                        for split_info in card.dataset_info:
+                            if (
+                                hasattr(split_info, "splits")
+                                and "train" in split_info.splits
+                            ):
+                                total += split_info.splits["train"].num_examples
+                                break
+                        else:
+                            logger.warning(
+                                f"Could not determine size for {dataset_name_or_path}"
+                            )
+                            return None
+                    else:
+                        logger.warning(
+                            f"Could not determine size for {dataset_name_or_path}"
+                        )
+                        return None
+                else:
+                    logger.warning(
+                        f"Could not determine size for {dataset_name_or_path}"
+                    )
+                    return None
+            except Exception as e:
+                logger.warning(
+                    f"Could not determine size for {dataset_name_or_path}: {e}"
+                )
+                return None
+
+    return total if total > 0 else None
+
+
+def compute_max_steps(
+    dataset_args: str,
+    num_epochs: float,
+    per_device_batch_size: int,
+    gradient_accumulation_steps: int = 1,
+    num_devices: int | None = None,
+) -> int | None:
+    """
+    Compute max_steps for streaming datasets based on desired epochs.
+
+    Args:
+        dataset_args: The dataset specification string
+        num_epochs: Desired number of epochs
+        per_device_batch_size: Batch size per device
+        gradient_accumulation_steps: Gradient accumulation steps
+        num_devices: Number of devices (auto-detected if None)
+
+    Returns:
+        Computed max_steps, or None if dataset size is unknown
+    """
+    dataset_size = get_dataset_size(dataset_args)
+    if dataset_size is None:
+        return None
+
+    if num_devices is None:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                num_devices = torch.cuda.device_count()
+            else:
+                # Check for TPU
+                try:
+                    import torch_xla.core.xla_model as xm
+
+                    num_devices = xm.xrt_world_size()
+                except ImportError:
+                    num_devices = 1
+        except Exception:
+            num_devices = 1
+
+    effective_batch_size = (
+        per_device_batch_size * num_devices * gradient_accumulation_steps
+    )
+    steps_per_epoch = dataset_size // effective_batch_size
+    max_steps = int(steps_per_epoch * num_epochs)
+
+    logger.info(
+        f"Auto-computed max_steps={max_steps} "
+        f"(dataset_size={dataset_size}, effective_batch={effective_batch_size}, "
+        f"epochs={num_epochs})"
+    )
+
+    return max_steps
+
+
 if __name__ == "__main__":
     breakpoint()
