@@ -162,9 +162,9 @@ def train():
         label_pad_token_id=tokenizer.pad_token_id,  # finetune on padded <eos_token>
     )
     data_collator = dllm.utils.NoAttentionMaskWrapper(base_collator)
-    if dllm.utils.device.is_tpu_available():
+    if data_args.pad_to_max_length:
         logger.info(
-            f"TPU detected: using fixed-length padding to max_length={data_args.max_length}"
+            f"pad_to_max_length=True: using fixed-length padding to max_length={data_args.max_length}"
         )
         data_collator = dllm.utils.collators.FixedLengthPaddingWrapper(
             data_collator,

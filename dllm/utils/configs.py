@@ -45,6 +45,27 @@ class DataArguments:
             )
         },
     )
+    pad_to_max_length: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Pad all sequences to max_length. Critical for TPU/XLA training "
+                "to avoid recompilation due to variable tensor shapes. "
+                "Automatically enabled when TPU is detected."
+            )
+        },
+    )
+
+    def __post_init__(self):
+        # Auto-enable pad_to_max_length on TPU if not explicitly set
+        from dllm.utils.device import is_tpu_available
+
+        if is_tpu_available() and not self.pad_to_max_length:
+            logger.info(
+                "TPU detected: automatically enabling pad_to_max_length=True "
+                "to avoid XLA recompilation."
+            )
+            self.pad_to_max_length = True
 
 
 @dataclass
