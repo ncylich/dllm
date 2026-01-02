@@ -279,18 +279,27 @@ def enable_xla_gradient_checkpointing(model: "torch.nn.Module") -> None:
     try:
         from torch_xla.utils.checkpoint import checkpoint as xla_checkpoint
 
-        # Enable gradient checkpointing with XLA's checkpoint function
-        # This directly passes the XLA checkpoint to the model instead of
-        # patching torch.utils.checkpoint (which doesn't work because HF
-        # models cache the function reference)
-        if hasattr(model, "gradient_checkpointing_enable"):
-            model.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False}
+        # The key insight: HuggingFace's _set_gradient_checkpointing sets
+        # _gradient_checkpointing_func on ALL submodules that have the
+        # `gradient_checkpointing` attribute. We need to pass our XLA checkpoint
+        # function directly to _set_gradient_checkpointing.
+        if hasattr(model, "_set_gradient_checkpointing"):
+            # Directly call the internal method with our XLA checkpoint function
+            model._set_gradient_checkpointing(
+                enable=True, gradient_checkpointing_func=xla_checkpoint
             )
-            # Override the checkpointing function with XLA's version
-            # HuggingFace stores this as _gradient_checkpointing_func
-            model._gradient_checkpointing_func = xla_checkpoint
+            # Also enable input require grads (normally done by gradient_checkpointing_enable)
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
             print("[XLA] Gradient checkpointing enabled with XLA checkpoint")
+        elif hasattr(model, "gradient_checkpointing_enable"):
+            # Fallback: enable normally, then try to override
+            model.gradient_checkpointing_enable()
+            # Override on all submodules that have the attribute
+            for module in model.modules():
+                if hasattr(module, "_gradient_checkpointing_func"):
+                    module._gradient_checkpointing_func = xla_checkpoint
+            print("[XLA] Gradient checkpointing enabled with XLA checkpoint (fallback)")
         else:
             print("[XLA] Warning: Model does not support gradient_checkpointing_enable()")
 
