@@ -556,20 +556,22 @@ def compute_max_steps(
 
     if num_devices is None:
         try:
-            import torch
+            # Try accelerate first (works for both GPU and TPU)
+            from accelerate import PartialState
 
-            if torch.cuda.is_available():
-                num_devices = torch.cuda.device_count()
-            else:
-                # Check for TPU
-                try:
-                    import torch_xla.core.xla_model as xm
+            num_devices = PartialState().num_processes
+            logger.info(f"DEBUG: PartialState().num_processes = {num_devices}")
+        except Exception as e:
+            logger.info(f"DEBUG: PartialState failed with {e}")
+            try:
+                import torch
 
-                    num_devices = xm.xrt_world_size()
-                except ImportError:
+                if torch.cuda.is_available():
+                    num_devices = torch.cuda.device_count()
+                else:
                     num_devices = 1
-        except Exception:
-            num_devices = 1
+            except Exception:
+                num_devices = 1
 
     effective_batch_size = (
         per_device_batch_size * num_devices * gradient_accumulation_steps
