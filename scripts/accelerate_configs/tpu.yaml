@@ -17,10 +17,14 @@ tpu_env:
   - XLA_HLO_DEBUG=0
   # Reduce host-device sync overhead
   - XLA_SYNC_WAIT=0
-  # Enable persistent compilation cache
+  # Enable persistent compilation cache (use persistent location)
   - XLA_PERSISTENT_CACHE_PATH=/tmp/xla_cache
   # Silence TF logging
   - TF_CPP_MIN_LOG_LEVEL=2
+  # XLA compiler optimization flags
+  - XLA_FLAGS=--xla_gpu_force_compilation_parallelism=8 --xla_gpu_enable_fast_min_max=true
+  # Use bfloat32 for better numerical stability in matmuls
+  - XLA_USE_BF16=1
 tpu_use_cluster: false
 tpu_use_sudo: false
 use_cpu: false

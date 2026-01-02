@@ -6,6 +6,46 @@ import transformers
 from dllm.utils.device import is_tpu_available
 
 
+class XLAMarkStepCallback(transformers.TrainerCallback):
+    """
+    Callback that calls xm.mark_step() periodically during TPU training.
+
+    XLA builds up a computation graph lazily. Without periodic mark_step() calls,
+    the graph can grow unbounded, causing memory issues and compilation overhead.
+    This callback forces XLA to execute the accumulated graph at regular intervals.
+
+    Args:
+        mark_step_interval: Call mark_step() every N training steps. Default is 1
+            (every step), which ensures consistent graph sizes. Higher values may
+            improve throughput but risk larger graphs.
+    """
+
+    def __init__(self, mark_step_interval: int = 1):
+        self.mark_step_interval = mark_step_interval
+        self._is_tpu = is_tpu_available()
+        self._xm = None
+        if self._is_tpu:
+            try:
+                import torch_xla.core.xla_model as xm
+                self._xm = xm
+            except ImportError:
+                pass
+
+    def on_step_end(self, args, state, control, **kwargs):
+        """Called at the end of each training step."""
+        if self._xm is not None and state.global_step % self.mark_step_interval == 0:
+            self._xm.mark_step()
+        return control
+
+    def on_substep_end(self, args, state, control, **kwargs):
+        """Called at the end of each gradient accumulation substep."""
+        # Also mark_step after each substep to keep graph size bounded
+        # during gradient accumulation
+        if self._xm is not None:
+            self._xm.mark_step()
+        return control
+
+
 class EpochPPLMeter(transformers.TrainerCallback):
     """
     Keeps running sums for dataset-level NLL/token and logs PPL once per epoch.
