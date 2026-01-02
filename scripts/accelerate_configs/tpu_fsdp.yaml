@@ -1,0 +1,42 @@
+# TPU XLA FSDP Configuration
+# NOTE: Accelerate's standard FSDP uses PyTorch FSDP (CUDA/NCCL).
+# For TPU, we use XLA distributed with XLA FSDP wrapping via DLLM_XLA_FSDP=1.
+#
+# XLA FSDP enables ZeRO-3 style sharding of parameters, gradients, and optimizer
+# states across TPU cores, allowing training of larger models.
+#
+# Usage:
+#   accelerate launch --config_file scripts/accelerate_configs/tpu_fsdp.yaml \
+#       examples/bert/sft.py --model_name_or_path "answerdotai/ModernBERT-base" ...
+compute_environment: LOCAL_MACHINE
+debug: false
+distributed_type: XLA
+downcast_bf16: 'no'
+machine_rank: 0
+main_training_function: main
+num_machines: 1
+num_processes: 8
+rdzv_backend: static
+same_network: true
+tpu_env:
+  # Enable XLA FSDP (ZeRO-3 style sharding)
+  - DLLM_XLA_FSDP=1
+  - TORCH_COMPILE_DISABLE=1
+  - DS_ACCELERATOR=cpu
+  # XLA performance optimizations
+  - XLA_USE_SPMD=1
+  - XLA_IR_DEBUG=0
+  - XLA_HLO_DEBUG=0
+  # Reduce host-device sync overhead
+  - XLA_SYNC_WAIT=0
+  # Enable persistent compilation cache
+  - XLA_PERSISTENT_CACHE_PATH=/tmp/xla_cache
+  # Silence TF logging
+  - TF_CPP_MIN_LOG_LEVEL=2
+  # XLA compiler optimization flags
+  - XLA_FLAGS=--xla_gpu_force_compilation_parallelism=8 --xla_gpu_enable_fast_min_max=true
+  # Use bfloat16 for faster computation
+  - XLA_USE_BF16=1
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false

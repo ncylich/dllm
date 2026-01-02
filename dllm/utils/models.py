@@ -4,6 +4,7 @@ import transformers
 from peft import prepare_model_for_kbit_training
 
 from dllm.utils.configs import ModelArguments, TrainingArguments
+from dllm.utils.device import get_xla_fsdp_layer_cls, wrap_model_xla_fsdp
 from dllm.utils.utils import disable_caching_allocator_warmup, load_peft, print_main
 
 
@@ -81,6 +82,10 @@ def get_model(
 
     # Optionally train with lora
     model = load_peft(model, model_args)
+
+    # Optionally wrap with XLA FSDP for TPU training (enable with DLLM_XLA_FSDP=1)
+    layer_cls = get_xla_fsdp_layer_cls(model_name_or_path)
+    model = wrap_model_xla_fsdp(model, transformer_layer_cls=layer_cls)
 
     return model
 
