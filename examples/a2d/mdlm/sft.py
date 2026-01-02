@@ -129,6 +129,13 @@ def train():
                 "or dataset size must be known for auto-computation."
             )
 
+    # ----- Disable group_by_length for streaming (incompatible with IterableDataset)
+    if data_args.streaming and training_args.group_by_length:
+        logger.warning(
+            "group_by_length is incompatible with streaming datasets, disabling it."
+        )
+        training_args.group_by_length = False
+
     # ----- Training --------------------------------------------------------------
     accelerate.PartialState().wait_for_everyone()
     logger.info("Start training...")
