@@ -160,20 +160,7 @@ class MDLMTrainer(transformers.Trainer):
         outputs = self._postprocess_outputs(outputs)
         logits = outputs.logits
 
-        # === 4. Handle degenerate cases (no tokens masked) ===
-        # If no positions were masked, return a zero loss to keep gradients valid.
-        # This step is necessary for Deepspeed Zero-{2,3}
-        if not masked_indices.any():
-            self.epoch_meter.update(
-                split="train" if model.training else "eval", 
-                nll_sum=logits.sum() * 0.0, 
-                token_cnt=token_cnt_per_seq.sum(),
-            )
-            return (
-                (logits.sum() * 0.0, outputs) if return_outputs else logits.sum() * 0.0
-            )
-
-        # === 5. Compute per-token loss weights ===
+        # === 4. Compute per-token loss weights ===
         # Depending on the configuration, weights may depend on timestep t
         # (e.g., scheduler-based) or be uniform (ones).
         loss_weights = self._compute_loss_weights(
@@ -181,28 +168,38 @@ class MDLMTrainer(transformers.Trainer):
         )
 
         # === 6. Compute weighted cross-entropy ===
-        # Only masked tokens contribute to the loss.
-        assert (input_ids[masked_indices] == labels[masked_indices]).all()
-        token_loss = F.cross_entropy(
-            logits[masked_indices], input_ids[masked_indices], reduction="none"
-        )
-        token_loss = token_loss * loss_weights[masked_indices]
+        # Compute loss on ALL tokens, then mask out non-masked positions.
+        # This avoids boolean indexing which causes XLA recompilation on TPU.
+        # Shape: logits [b, l, vocab], input_ids [b, l]
+        per_token_loss = F.cross_entropy(
+            logits.view(-1, logits.size(-1)),  # [b*l, vocab]
+            input_ids.view(-1),  # [b*l]
+            reduction="none",
+        ).view(b, l)  # [b, l]
+
+        # Zero out loss for non-masked positions
+        per_token_loss = per_token_loss * masked_indices.float()
+        per_token_loss = per_token_loss * loss_weights
 
         # === 7. Normalize loss ===
+        # Count masked tokens per sequence for proper normalization
+        masked_cnt_per_seq = masked_indices.sum(dim=1, keepdim=True).float().clamp(min=1)  # [b, 1]
+        total_masked = masked_indices.sum().float().clamp(min=1)
+
         if self.loss_normalization_type == "batch":
-            token_loss_normalized = token_loss / b
+            loss = per_token_loss.sum() / b
         elif self.loss_normalization_type == "sequence":
-            token_loss_normalized = token_loss / token_cnt_per_seq.expand(-1, l)[masked_indices] / b
+            # Normalize by token count per sequence, then average over batch
+            loss = (per_token_loss.sum(dim=1) / token_cnt_per_seq.squeeze(1).float().clamp(min=1)).mean()
         elif self.loss_normalization_type == "token":
-            token_loss_normalized = token_loss / token_cnt_per_seq.sum()
+            loss = per_token_loss.sum() / token_cnt_per_seq.sum().float().clamp(min=1)
         else:
             raise ValueError("Invalid loss_normalization_type.")
-        loss = token_loss_normalized.sum()
 
         # === 8. Return final loss (and optionally model outputs) ===
         self.epoch_meter.update(
-            split="train" if model.training else "eval", 
-            nll_sum=token_loss.sum(), 
+            split="train" if model.training else "eval",
+            nll_sum=per_token_loss.sum(),
             token_cnt=token_cnt_per_seq.sum(),
         ) # `nll_sum / token_cnt` is equivalent to `loss` when `self.loss_normalization_type == "token"``
         return (loss, outputs) if return_outputs else loss
