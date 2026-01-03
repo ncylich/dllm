@@ -199,6 +199,8 @@ def train():
             label_pad_token_id=-100,
         )
         # Create bucketed batch sampler (groups similar lengths)
+        # Get distributed info from accelerate's PartialState (works for TPU/GPU/CPU)
+        state = accelerate.PartialState()
         train_lengths = [len(x) for x in dataset["train"]["input_ids"]]
         train_sampler = dllm.utils.collators.BucketedBatchSampler(
             lengths=train_lengths,
@@ -207,8 +209,12 @@ def train():
             drop_last=training_args.dataloader_drop_last,
             shuffle=True,
             seed=training_args.seed,
+            num_replicas=state.num_processes,
+            rank=state.process_index,
         )
-        # Log bucket distribution
+        # Log bucket distribution and sampler info
+        logger.info(f"  Distributed: {state.num_processes} processes, rank {state.process_index}")
+        logger.info(f"  Total batches: {len(train_sampler)} (per device)")
         for bucket, indices in train_sampler.bucket_indices.items():
             logger.info(f"  Bucket {bucket}: {len(indices):,} samples")
     elif data_args.pad_to_max_length:

@@ -342,16 +342,27 @@ class BucketedBatchSampler(torch.utils.data.Sampler):
         self.epoch = 0
 
         # Auto-detect distributed settings
-        if num_replicas is None:
-            if torch.distributed.is_available() and torch.distributed.is_initialized():
-                num_replicas = torch.distributed.get_world_size()
-            else:
-                num_replicas = 1
-        if rank is None:
-            if torch.distributed.is_available() and torch.distributed.is_initialized():
-                rank = torch.distributed.get_rank()
-            else:
-                rank = 0
+        # Try accelerate first (works for TPU/GPU/CPU), then fall back to torch.distributed
+        if num_replicas is None or rank is None:
+            try:
+                from accelerate import PartialState
+                state = PartialState()
+                if num_replicas is None:
+                    num_replicas = state.num_processes
+                if rank is None:
+                    rank = state.process_index
+            except Exception:
+                # Fall back to torch.distributed
+                if num_replicas is None:
+                    if torch.distributed.is_available() and torch.distributed.is_initialized():
+                        num_replicas = torch.distributed.get_world_size()
+                    else:
+                        num_replicas = 1
+                if rank is None:
+                    if torch.distributed.is_available() and torch.distributed.is_initialized():
+                        rank = torch.distributed.get_rank()
+                    else:
+                        rank = 0
 
         self.num_replicas = num_replicas
         self.rank = rank
