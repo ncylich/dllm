@@ -28,6 +28,7 @@ def is_tpu_available() -> bool:
     compatibility with xmp.spawn(). Uses multiple detection methods:
     1. PJRT_DEVICE env var (set after xmp.spawn or by user)
     2. libtpu.so presence (hardware detection without runtime init)
+    3. /dev/accel* devices (TPU hardware device nodes)
     """
     import os
 
@@ -37,13 +38,27 @@ def is_tpu_available() -> bool:
 
     # Method 2: Check for libtpu.so (TPU hardware) without initializing runtime
     # This mirrors what torch_xla does internally for auto-detection
+    # Try multiple common locations where libtpu.so might be installed
     try:
         import ctypes
 
         ctypes.CDLL("libtpu.so")
         return True
     except OSError:
-        return False
+        pass
+
+    # Method 3: Check for TPU device nodes
+    # TPU v2-v5 use /dev/accel*, TPU v6 may use different paths
+    try:
+        dev_path = "/dev"
+        if os.path.isdir(dev_path):
+            for entry in os.listdir(dev_path):
+                if entry.startswith("accel"):
+                    return True
+    except (OSError, PermissionError):
+        pass
+
+    return False
 
 
 def get_device(local_rank: int = 0) -> torch.device:

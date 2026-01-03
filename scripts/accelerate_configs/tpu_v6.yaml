@@ -11,6 +11,7 @@ num_processes: 1
 rdzv_backend: static
 same_network: true
 tpu_env:
+  - PJRT_DEVICE=TPU
   - TORCH_COMPILE_DISABLE=1
   - DS_ACCELERATOR=cpu
   # Disable SPMD - not compatible with accelerate's multi-process model
