@@ -309,13 +309,17 @@ class BucketedBatchSampler(torch.utils.data.Sampler):
     minimizing padding waste. Combined with BucketedPaddingWrapper, this provides
     significant compute savings on TPU/XLA.
 
+    Supports distributed training by sharding batches across devices.
+
     Args:
         lengths: List/array of sequence lengths for each sample in the dataset.
-        batch_size: Number of samples per batch.
+        batch_size: Number of samples per batch (per device).
         buckets: List of bucket boundaries (e.g., [256, 512, 768, 1024]).
         drop_last: If True, drop the last incomplete batch in each bucket.
         shuffle: If True, shuffle samples within each bucket and shuffle batch order.
         seed: Random seed for shuffling.
+        num_replicas: Number of distributed processes (auto-detected if None).
+        rank: Rank of the current process (auto-detected if None).
     """
 
     def __init__(
@@ -326,6 +330,8 @@ class BucketedBatchSampler(torch.utils.data.Sampler):
         drop_last: bool = True,
         shuffle: bool = True,
         seed: int = 42,
+        num_replicas: int | None = None,
+        rank: int | None = None,
     ):
         self.lengths = lengths
         self.batch_size = batch_size
@@ -334,6 +340,21 @@ class BucketedBatchSampler(torch.utils.data.Sampler):
         self.shuffle = shuffle
         self.seed = seed
         self.epoch = 0
+
+        # Auto-detect distributed settings
+        if num_replicas is None:
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                num_replicas = torch.distributed.get_world_size()
+            else:
+                num_replicas = 1
+        if rank is None:
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                rank = torch.distributed.get_rank()
+            else:
+                rank = 0
+
+        self.num_replicas = num_replicas
+        self.rank = rank
 
         # Assign each sample to a bucket
         self.bucket_indices = self._assign_buckets()
@@ -365,6 +386,9 @@ class BucketedBatchSampler(torch.utils.data.Sampler):
             if len(indices) == 0:
                 continue
 
+            # Make a copy to avoid modifying the original
+            indices = list(indices)
+
             # Shuffle indices within this bucket
             if self.shuffle:
                 perm = torch.randperm(len(indices), generator=g).tolist()
@@ -381,6 +405,10 @@ class BucketedBatchSampler(torch.utils.data.Sampler):
             batch_perm = torch.randperm(len(all_batches), generator=g).tolist()
             all_batches = [all_batches[i] for i in batch_perm]
 
+        # Shard batches across replicas - each replica gets every num_replicas-th batch
+        # This ensures all replicas see different data
+        all_batches = all_batches[self.rank :: self.num_replicas]
+
         yield from all_batches
 
     def __len__(self):
@@ -390,7 +418,8 @@ class BucketedBatchSampler(torch.utils.data.Sampler):
             if not self.drop_last and len(indices) % self.batch_size != 0:
                 n_batches += 1
             total += n_batches
-        return total
+        # Divide by number of replicas for distributed training
+        return total // self.num_replicas
 
     def set_epoch(self, epoch: int):
         """Set the epoch for shuffling reproducibility."""
