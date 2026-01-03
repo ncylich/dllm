@@ -175,7 +175,35 @@ def train():
         label_pad_token_id=tokenizer.pad_token_id,  # finetune on padded <eos_token>
     )
     data_collator = dllm.utils.NoAttentionMaskWrapper(base_collator)
-    if data_args.pad_to_max_length:
+
+    # Length bucketing for efficient TPU training (reduces padding waste by ~35-40%)
+    train_sampler = None
+    if data_args.use_length_bucketing and not data_args.streaming:
+        buckets = data_args._parsed_buckets
+        logger.info(
+            f"use_length_bucketing=True: using buckets {buckets} for efficient padding"
+        )
+        # Create bucketed collator (pads to bucket boundaries)
+        data_collator = dllm.utils.collators.BucketedPaddingWrapper(
+            data_collator,
+            buckets=buckets,
+            pad_token_id=tokenizer.pad_token_id,
+            label_pad_token_id=-100,
+        )
+        # Create bucketed batch sampler (groups similar lengths)
+        train_lengths = [len(x) for x in dataset["train"]["input_ids"]]
+        train_sampler = dllm.utils.collators.BucketedBatchSampler(
+            lengths=train_lengths,
+            batch_size=training_args.per_device_train_batch_size,
+            buckets=buckets,
+            drop_last=training_args.dataloader_drop_last,
+            shuffle=True,
+            seed=training_args.seed,
+        )
+        # Log bucket distribution
+        for bucket, indices in train_sampler.bucket_indices.items():
+            logger.info(f"  Bucket {bucket}: {len(indices):,} samples")
+    elif data_args.pad_to_max_length:
         logger.info(
             f"pad_to_max_length=True: using fixed-length padding to max_length={data_args.max_length}"
         )
@@ -186,14 +214,50 @@ def train():
             label_pad_token_id=-100,
         )
 
-    trainer = dllm.core.trainers.MDLMTrainer(
-        model=model,
-        processing_class=tokenizer,
-        train_dataset=dataset["train"],
-        eval_dataset=eval_dataset,
-        args=training_args,
-        data_collator=data_collator,
-    )
+    # Create a custom Trainer subclass that uses the bucketed sampler
+    trainer_cls = dllm.core.trainers.MDLMTrainer
+    if train_sampler is not None:
+        # Create a subclass that overrides get_train_dataloader to use our sampler
+        class BucketedMDLMTrainer(dllm.core.trainers.MDLMTrainer):
+            def __init__(self, bucket_sampler, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self._bucket_sampler = bucket_sampler
+
+            def get_train_dataloader(self):
+                from torch.utils.data import DataLoader
+
+                # Update sampler epoch for proper shuffling
+                self._bucket_sampler.set_epoch(
+                    int(self.state.epoch) if hasattr(self.state, "epoch") else 0
+                )
+
+                return DataLoader(
+                    self.train_dataset,
+                    batch_sampler=self._bucket_sampler,
+                    collate_fn=self.data_collator,
+                    num_workers=self.args.dataloader_num_workers,
+                    pin_memory=self.args.dataloader_pin_memory,
+                )
+
+        trainer = BucketedMDLMTrainer(
+            bucket_sampler=train_sampler,
+            model=model,
+            processing_class=tokenizer,
+            train_dataset=dataset["train"],
+            eval_dataset=eval_dataset,
+            args=training_args,
+            data_collator=data_collator,
+        )
+    else:
+        trainer = dllm.core.trainers.MDLMTrainer(
+            model=model,
+            processing_class=tokenizer,
+            train_dataset=dataset["train"],
+            eval_dataset=eval_dataset,
+            args=training_args,
+            data_collator=data_collator,
+        )
+
     trainer.train()
     trainer.save_model(os.path.join(training_args.output_dir, "checkpoint-final"))
     trainer.processing_class.save_pretrained(
