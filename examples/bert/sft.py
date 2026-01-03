@@ -172,9 +172,12 @@ def train():
         training_args.eval_strategy = "no"
 
     # ----- Training --------------------------------------------------------------
-    accelerate.PartialState().wait_for_everyone()
+    # NOTE: wait_for_everyone() removed - causes hangs on TPU v6 with PJRT
+    # because PartialState sees 4 devices but we're running 1 OS process
+    print("[DEBUG] About to start training setup...", flush=True)
     logger.info("Start training...")
 
+    print("[DEBUG] Building data collator...", flush=True)
     # Build data collator - use fixed-length padding on TPU to avoid XLA recompilation
     base_collator = transformers.DataCollatorForSeq2Seq(
         tokenizer,
@@ -218,6 +221,7 @@ def train():
         for bucket, indices in train_sampler.bucket_indices.items():
             logger.info(f"  Bucket {bucket}: {len(indices):,} samples")
     elif data_args.pad_to_max_length:
+        print("[DEBUG] Using pad_to_max_length...", flush=True)
         logger.info(
             f"pad_to_max_length=True: using fixed-length padding to max_length={data_args.max_length}"
         )
@@ -264,6 +268,7 @@ def train():
             data_collator=data_collator,
         )
     else:
+        print("[DEBUG] Creating MDLMTrainer...", flush=True)
         trainer = dllm.core.trainers.MDLMTrainer(
             model=model,
             processing_class=tokenizer,
@@ -272,7 +277,9 @@ def train():
             args=training_args,
             data_collator=data_collator,
         )
+        print("[DEBUG] Trainer created!", flush=True)
 
+    print("[DEBUG] Starting trainer.train()...", flush=True)
     trainer.train()
     trainer.save_model(os.path.join(training_args.output_dir, "checkpoint-final"))
     trainer.processing_class.save_pretrained(
