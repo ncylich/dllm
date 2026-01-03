@@ -227,9 +227,10 @@ def train():
                 from torch.utils.data import DataLoader
 
                 # Update sampler epoch for proper shuffling
-                self._bucket_sampler.set_epoch(
-                    int(self.state.epoch) if hasattr(self.state, "epoch") else 0
-                )
+                epoch = 0
+                if hasattr(self.state, "epoch") and self.state.epoch is not None:
+                    epoch = int(self.state.epoch)
+                self._bucket_sampler.set_epoch(epoch)
 
                 return DataLoader(
                     self.train_dataset,
