@@ -6,7 +6,6 @@ from peft import prepare_model_for_kbit_training
 from dllm.utils.configs import ModelArguments, TrainingArguments
 from dllm.utils.device import (
     enable_xla_gradient_checkpointing,
-    enable_xla_scan_layers,
     get_xla_fsdp_layer_cls,
     wrap_model_xla_fsdp,
 )
@@ -92,11 +91,6 @@ def get_model(
     # This patches torch.utils.checkpoint to use XLA's implementation and enables
     # gradient checkpointing on the model. Must be done BEFORE FSDP wrapping.
     enable_xla_gradient_checkpointing(model)
-
-    # Enable XLA scan_layers optimization if requested (DLLM_XLA_SCAN=1)
-    # This uses scan_layers to compile only the first transformer layer and reuse
-    # that compiled HLO for all subsequent layers, reducing compilation time.
-    enable_xla_scan_layers(model)
 
     # Optionally wrap with XLA FSDP for TPU training (enable with DLLM_XLA_FSDP=1)
     layer_cls = get_xla_fsdp_layer_cls(model_name_or_path)
