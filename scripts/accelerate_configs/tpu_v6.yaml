@@ -1,0 +1,30 @@
+# TPU v6 Configuration (PJRT runtime)
+# For TPU v6-4 (4 chips) - uses single process with PJRT handling device distribution
+compute_environment: LOCAL_MACHINE
+debug: false
+distributed_type: XLA
+downcast_bf16: 'no'
+machine_rank: 0
+main_training_function: main
+num_machines: 1
+num_processes: 1
+rdzv_backend: static
+same_network: true
+tpu_env:
+  - TORCH_COMPILE_DISABLE=1
+  - DS_ACCELERATOR=cpu
+  # Disable SPMD - not compatible with accelerate's multi-process model
+  - XLA_USE_SPMD=0
+  - XLA_IR_DEBUG=0
+  - XLA_HLO_DEBUG=0
+  # Reduce host-device sync overhead
+  - XLA_SYNC_WAIT=0
+  # Enable persistent compilation cache
+  - XLA_PERSISTENT_CACHE_PATH=/tmp/xla_cache
+  # Silence TF logging
+  - TF_CPP_MIN_LOG_LEVEL=2
+  # Use bfloat16 for better performance
+  - XLA_USE_BF16=1
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false
