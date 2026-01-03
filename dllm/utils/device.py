@@ -28,7 +28,8 @@ def is_tpu_available() -> bool:
     compatibility with xmp.spawn(). Uses multiple detection methods:
     1. PJRT_DEVICE env var (set after xmp.spawn or by user)
     2. libtpu.so presence (hardware detection without runtime init)
-    3. /dev/accel* devices (TPU hardware device nodes)
+    3. /dev/accel* devices (TPU v2-v5 hardware device nodes)
+    4. /dev/vfio/* devices (TPU v6 PJRT hardware device nodes)
     """
     import os
 
@@ -38,7 +39,6 @@ def is_tpu_available() -> bool:
 
     # Method 2: Check for libtpu.so (TPU hardware) without initializing runtime
     # This mirrors what torch_xla does internally for auto-detection
-    # Try multiple common locations where libtpu.so might be installed
     try:
         import ctypes
 
@@ -47,14 +47,24 @@ def is_tpu_available() -> bool:
     except OSError:
         pass
 
-    # Method 3: Check for TPU device nodes
-    # TPU v2-v5 use /dev/accel*, TPU v6 may use different paths
+    # Method 3: Check for /dev/accel* devices (TPU v2-v5)
     try:
         dev_path = "/dev"
         if os.path.isdir(dev_path):
             for entry in os.listdir(dev_path):
                 if entry.startswith("accel"):
                     return True
+    except (OSError, PermissionError):
+        pass
+
+    # Method 4: Check for /dev/vfio/* devices (TPU v6 uses VFIO-based PJRT)
+    # TPU v6 devices appear as /dev/vfio/0, /dev/vfio/1, etc.
+    try:
+        vfio_path = "/dev/vfio"
+        if os.path.isdir(vfio_path):
+            vfio_devices = [f for f in os.listdir(vfio_path) if f.isdigit()]
+            if vfio_devices:
+                return True
     except (OSError, PermissionError):
         pass
 
