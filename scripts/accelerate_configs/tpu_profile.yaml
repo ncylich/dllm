@@ -18,6 +18,8 @@ tpu_env:
   - DS_ACCELERATOR=cpu
   # Enable XLA profiling via callback (profiles steps 10-20 by default)
   - DLLM_XLA_PROFILE=1
+  # Enable scan_layers optimization (compiles first layer, reuses for rest)
+  # - DLLM_XLA_SCAN=1
   # XLA performance optimizations
   - XLA_USE_SPMD=1
   - XLA_IR_DEBUG=0
