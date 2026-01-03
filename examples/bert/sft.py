@@ -97,6 +97,14 @@ def train():
             streaming=data_args.streaming,
             load_preprocessed_data=data_args.load_preprocessed_data,
         )
+        # Remove any extra columns (like 'id') that can't be converted to tensors
+        # Only keep columns needed for training
+        train_columns = {"input_ids", "labels", "attention_mask"}
+        for split in dataset:
+            extra_cols = [c for c in dataset[split].column_names if c not in train_columns]
+            if extra_cols:
+                logger.info(f"Removing extra columns from {split}: {extra_cols}")
+                dataset[split] = dataset[split].remove_columns(extra_cols)
         # Skip post_process_dataset for preprocessed data - it was already
         # filtered/truncated during preprocessing
     else:
