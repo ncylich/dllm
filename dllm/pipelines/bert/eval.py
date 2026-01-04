@@ -377,7 +377,7 @@ class BERTEvalHarness(LM):
             )  # drop [CLS][SEP]
             prompt = [trimmed_prompt]
             stop_tokens = gen_kwargs["until"]
-            generated_ids = sampler.sample(
+            generated_output = sampler.sample(
                 inputs=prompt,
                 steps=self.steps,
                 max_new_tokens=self.max_new_tokens,
@@ -386,8 +386,15 @@ class BERTEvalHarness(LM):
                 cfg_scale=self.cfg,
                 remasking=self.remasking,
             )
+            # Handle both tensor and SamplerOutput return types
+            if hasattr(generated_output, "sequences"):
+                generated_ids = generated_output.sequences
+            else:
+                generated_ids = generated_output
+            # Move to CPU before decoding to avoid TPU sync stall
+            generated_ids_cpu = generated_ids[0].cpu()
             generated_answer = self.tokenizer.decode(
-                generated_ids[0][prompt[0].shape[0] :], skip_special_tokens=False
+                generated_ids_cpu[prompt[0].shape[0] :], skip_special_tokens=False
             )
             for stop_seq in stop_tokens:
                 if stop_seq in generated_answer:
