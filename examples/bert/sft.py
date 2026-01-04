@@ -185,7 +185,6 @@ def train():
         padding=True,
         label_pad_token_id=tokenizer.pad_token_id,  # finetune on padded <eos_token>
     )
-    data_collator = dllm.utils.NoAttentionMaskWrapper(base_collator)
 
     # Length bucketing for efficient TPU training (reduces padding waste by ~35-40%)
     train_sampler = None
@@ -195,8 +194,11 @@ def train():
             f"use_length_bucketing=True: using buckets {buckets} for efficient padding"
         )
         # Create bucketed collator (pads to bucket boundaries)
+        # NOTE: Do NOT remove attention_mask with length bucketing - the model needs it
+        # to know which tokens are padding. Removing it causes warn_if_padding_and_no_attention_mask
+        # to check `pad_token_id in input_ids` which triggers an XLA sync and hangs on TPU.
         data_collator = dllm.utils.collators.BucketedPaddingWrapper(
-            data_collator,
+            base_collator,  # Keep attention_mask!
             buckets=buckets,
             pad_token_id=tokenizer.pad_token_id,
             label_pad_token_id=-100,
@@ -225,12 +227,18 @@ def train():
         logger.info(
             f"pad_to_max_length=True: using fixed-length padding to max_length={data_args.max_length}"
         )
+        # With fixed-length padding, all sequences are the same length, so we can
+        # remove attention_mask (model will attend to all positions including padding)
+        data_collator = dllm.utils.NoAttentionMaskWrapper(base_collator)
         data_collator = dllm.utils.collators.FixedLengthPaddingWrapper(
             data_collator,
             max_length=data_args.max_length,
             pad_token_id=tokenizer.pad_token_id,
             label_pad_token_id=-100,
         )
+    else:
+        # Default: remove attention_mask (original behavior for non-TPU or simple cases)
+        data_collator = dllm.utils.NoAttentionMaskWrapper(base_collator)
 
     # Create a custom Trainer subclass that uses the bucketed sampler
     trainer_cls = dllm.core.trainers.MDLMTrainer
@@ -250,13 +258,17 @@ def train():
                     epoch = int(self.state.epoch)
                 self._bucket_sampler.set_epoch(epoch)
 
-                return DataLoader(
+                dataloader = DataLoader(
                     self.train_dataset,
                     batch_sampler=self._bucket_sampler,
                     collate_fn=self.data_collator,
                     num_workers=self.args.dataloader_num_workers,
                     pin_memory=self.args.dataloader_pin_memory,
                 )
+
+                # CRITICAL: Must prepare dataloader with accelerator for TPU/distributed training
+                # This wraps with MpDeviceLoader on TPU which handles device placement and mark_step()
+                return self.accelerator.prepare(dataloader)
 
         trainer = BucketedMDLMTrainer(
             bucket_sampler=train_sampler,
