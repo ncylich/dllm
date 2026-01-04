@@ -191,10 +191,12 @@ class DreamSampler(BaseSampler):
             else:
                 raise RuntimeError(f"Unknown alg: {alg}")
 
+            # Use torch.where instead of boolean indexing for TPU compatibility
             full_confidence = torch.full_like(
                 x, -torch.inf, device=self.model.device, dtype=logits.dtype
             )
-            full_confidence[mask_index] = confidence
+            # Scatter confidence values at masked positions
+            full_confidence = torch.where(mask_index, confidence.to(full_confidence.dtype), full_confidence)
 
             # Vectorized top-k selection to avoid TPU sync
             # This handles both deterministic (topk) and stochastic (multinomial) cases
@@ -214,24 +216,20 @@ class DreamSampler(BaseSampler):
                 # For TPU compatibility, we vectorize as much as possible
                 fc = full_confidence / alg_temp
                 fc = F.softmax(fc, dim=-1)
-                # Multinomial with variable num_samples is tricky - fall back to loop
-                # but at least we avoid .item() by using tensor comparison
+                # Multinomial with variable num_samples is tricky
                 transfer_mask = torch.zeros_like(full_confidence, dtype=torch.bool)
                 max_k = int(k_per_row.max())
                 if max_k > 0:
-                    # Sample max_k for all rows, then mask out extras
+                    # Sample max_k for all rows, then mask out extras using scatter
                     sampled_idx = torch.multinomial(fc, num_samples=max_k, replacement=False)
                     positions = torch.arange(max_k, device=fc.device).unsqueeze(0).expand(B_cur, -1)
                     valid_samples = positions < k_per_row
-                    # Only set transfer_mask for valid samples
-                    for j in range(B_cur):
-                        valid_idx = sampled_idx[j, valid_samples[j]]
-                        transfer_mask[j, valid_idx] = True
+                    # Scatter True values at sampled indices where valid
+                    transfer_mask.scatter_(1, sampled_idx, valid_samples)
 
-            # Candidate tokens at masked positions only
-            x_ = torch.full_like(x, mask_token_id, device=self.model.device)
-            x_[mask_index] = x0.clone()
-            x[transfer_mask] = x_[transfer_mask]
+            # Candidate tokens: use torch.where for TPU compatibility
+            x_ = torch.where(mask_index, x0, torch.full_like(x, mask_token_id, device=self.model.device))
+            x = torch.where(transfer_mask, x_, x)
 
             x = generation_tokens_hook_func(i, x, logits)
             if histories is not None:
@@ -406,10 +404,11 @@ class DreamSampler(BaseSampler):
                 raise RuntimeError(f"Unknown alg: {alg}")
 
             # Scatter per-position confidence back to full canvas
+            # Use torch.where instead of boolean indexing for TPU compatibility
             full_confidence = torch.full_like(
                 x, -torch.inf, device=self.model.device, dtype=logits.dtype
             )
-            full_confidence[mask_index] = confidence
+            full_confidence = torch.where(mask_index, confidence.to(full_confidence.dtype), full_confidence)
 
             # Vectorized top-k selection to avoid TPU sync
             # This handles both deterministic (topk) and stochastic (multinomial) cases
@@ -428,24 +427,21 @@ class DreamSampler(BaseSampler):
                 # For TPU compatibility, we vectorize as much as possible
                 fc = full_confidence / alg_temp
                 fc = F.softmax(fc, dim=-1)
-                # Multinomial with variable num_samples is tricky - fall back to loop
-                # but at least we avoid .item() by using tensor comparison
+                # Multinomial with variable num_samples - use vectorized scatter approach
                 transfer_mask = torch.zeros_like(full_confidence, dtype=torch.bool)
                 max_k = int(k_per_row.max())
                 if max_k > 0:
-                    # Sample max_k for all rows, then mask out extras
+                    # Sample max_k for all rows, then mask out extras using scatter
                     sampled_idx = torch.multinomial(fc, num_samples=max_k, replacement=False)
                     positions = torch.arange(max_k, device=fc.device).unsqueeze(0).expand(B, -1)
                     valid_samples = positions < k_per_row
-                    # Only set transfer_mask for valid samples
-                    for j in range(B):
-                        valid_idx = sampled_idx[j, valid_samples[j]]
-                        transfer_mask[j, valid_idx] = True
+                    # Scatter True values at sampled indices where valid
+                    transfer_mask.scatter_(1, sampled_idx, valid_samples)
 
             # Candidate tokens at masked positions only
-            x_ = torch.full_like(x, mask_token_id, device=self.model.device)
-            x_[mask_index] = x0.clone()
-            x[transfer_mask] = x_[transfer_mask]
+            # Use torch.where instead of boolean indexing for TPU compatibility
+            x_ = torch.where(mask_index, x0, torch.full_like(x, mask_token_id, device=self.model.device))
+            x = torch.where(transfer_mask, x_, x)
 
             # Optional token hook + history logging
             x = generation_tokens_hook_func(i, x, logits)

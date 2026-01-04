@@ -207,7 +207,8 @@ class BERTEvalHarness(LM):
             assert len(prompt_index) == batch.shape[1]
             prompt_index = prompt_index.unsqueeze(0).repeat(batch.shape[0], 1)
             un_batch = batch.clone()
-            un_batch[prompt_index] = self.mask_id
+            # Use torch.where instead of boolean indexing for TPU compatibility
+            un_batch = torch.where(prompt_index, self.mask_id, un_batch)
             batch = torch.cat([batch, un_batch])
 
         logits = self.model(batch).logits
@@ -266,8 +267,16 @@ class BERTEvalHarness(LM):
                 dim=-1
             )
             _, index = torch.sort(confidence, descending=True)
-            x0[index[1:]] = self.mask_id
-            seq[mask_index] = x0.clone()
+            # Use vectorized approach instead of boolean indexing for TPU compatibility
+            # Create mask for positions after the first (highest confidence)
+            positions = torch.arange(x0.size(0), device=x0.device)
+            remask = positions >= 1
+            remask_indices = index[remask]  # indices to remask (all but top-1)
+            # Scatter mask_id to those positions
+            x0_updated = x0.clone()
+            x0_updated[remask_indices] = self.mask_id
+            # Use torch.where to update seq at mask positions
+            seq = torch.where(mask_index, x0_updated.unsqueeze(0).expand_as(seq), seq)
         correct = target == seq[0, len(prefix) :]
         correct = torch.all(correct)
         return correct

@@ -163,8 +163,8 @@ class MDLMSampler(BaseSampler):
 
                 # Optional CFG: second forward where original prompt tokens are masked out
                 if cfg_scale > 0.0:
-                    un_x = x.clone()
-                    un_x[unmasked_index] = mask_id
+                    # Use torch.where instead of boolean indexing for TPU compatibility
+                    un_x = torch.where(unmasked_index, mask_id, x)
                     x_ = torch.cat([x, un_x], dim=0)
                     logits = self.model(
                         x_, attention_mask=attention_mask
@@ -207,13 +207,18 @@ class MDLMSampler(BaseSampler):
                     raise NotImplementedError(remasking)
 
                 # Restrict selection window to the *current block's* tail region
-                for j in range(B):
-                    x0_p[j, prompt_lens[j] + (b + 1) * block_size :] = -np.inf
+                # Use vectorized masking instead of per-row loop for TPU compatibility
+                row_indices = torch.arange(B, device=x0_p.device).unsqueeze(1)
+                col_indices = torch.arange(x0_p.shape[1], device=x0_p.device).unsqueeze(0)
+                prompt_lens_t = torch.tensor(prompt_lens, device=x0_p.device).unsqueeze(1)
+                block_end = prompt_lens_t + (b + 1) * block_size
+                outside_block = col_indices >= block_end
+                x0_p = torch.where(outside_block, torch.tensor(-np.inf, device=x0_p.device, dtype=x0_p.dtype), x0_p)
 
                 # Only allow updates at currently masked positions; keep others fixed
                 x0 = torch.where(mask_index, x0, x)
                 confidence = torch.where(
-                    mask_index, x0_p, -np.inf
+                    mask_index, x0_p, torch.tensor(-np.inf, device=x0_p.device, dtype=x0_p.dtype)
                 )  # consider masked positions only
 
                 # Pick exactly `num_transfer_tokens[j, i]` highest-confidence positions per sample
@@ -229,8 +234,8 @@ class MDLMSampler(BaseSampler):
                 transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
                 transfer_index.scatter_(1, sorted_idx, top_k_mask)
 
-                # Commit chosen predictions into the canvas
-                x[transfer_index] = x0[transfer_index]
+                # Commit chosen predictions into the canvas using torch.where (TPU-friendly)
+                x = torch.where(transfer_index, x0, x)
                 if histories is not None:
                     histories.append(x.clone())
 
@@ -357,8 +362,8 @@ class MDLMSampler(BaseSampler):
 
                 # ----- Forward pass (+ optional CFG) -----
                 if cfg_scale > 0.0:
-                    un_x = x.clone()
-                    un_x[unmasked_index] = mask_id
+                    # Use torch.where instead of boolean indexing for TPU compatibility
+                    un_x = torch.where(unmasked_index, mask_id, x)
                     x_ = torch.cat([x, un_x], dim=0)
                     logits = self.model(
                         x_, attention_mask=attention_mask
@@ -397,15 +402,18 @@ class MDLMSampler(BaseSampler):
                     raise NotImplementedError(remasking)
 
                 # Restrict selection to the *current* block only
-                for j in range(B):
-                    end_j = start + widths[j]
-                    # Outside current block => impossible to select
-                    x0_p[j, :start] = -np.inf
-                    x0_p[j, end_j:] = -np.inf
+                # Use vectorized masking instead of per-row loop for TPU compatibility
+                col_indices = torch.arange(T, device=x0_p.device).unsqueeze(0)
+                widths_t = torch.tensor(widths, device=x0_p.device).unsqueeze(1)
+                end_positions = start + widths_t
+                before_block = col_indices < start
+                after_block = col_indices >= end_positions
+                outside_block = before_block | after_block
+                x0_p = torch.where(outside_block, torch.tensor(-np.inf, device=x0_p.device, dtype=x0_p.dtype), x0_p)
 
                 # Only consider currently-masked positions as candidates
                 x0 = torch.where(mask_index_full, x0, x)
-                confidence = torch.where(mask_index_full, x0_p, -np.inf)
+                confidence = torch.where(mask_index_full, x0_p, torch.tensor(-np.inf, device=x0_p.device, dtype=x0_p.dtype))
 
                 # Pick exactly num_transfer_tokens[j, s] positions per sample
                 # Vectorized approach: sort by confidence, then use position mask to select top-k per row
@@ -420,8 +428,8 @@ class MDLMSampler(BaseSampler):
                 transfer_index = torch.zeros_like(x, dtype=torch.bool)
                 transfer_index.scatter_(1, sorted_idx, top_k_mask)
 
-                # Commit selected predictions into the canvas
-                x[transfer_index] = x0[transfer_index]
+                # Commit selected predictions into the canvas using torch.where (TPU-friendly)
+                x = torch.where(transfer_index, x0, x)
                 if histories is not None:
                     histories.append(x.clone())
 

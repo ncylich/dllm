@@ -238,7 +238,9 @@ class LLaDA2Sampler(BaseSampler):
                     topk_transfer.scatter_(1, sorted_idx, top_k_mask)
                     transfer_index = transfer_index | topk_transfer
 
-                block_slice[transfer_index] = tokens[transfer_index]
+                # Use torch.where instead of boolean indexing for TPU compatibility
+                block_slice = torch.where(transfer_index, tokens, block_slice)
+                x[:, window_end - block_size : window_end] = block_slice
 
                 if histories is not None:
                     histories.append(x.clone())

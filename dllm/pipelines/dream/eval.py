@@ -305,7 +305,8 @@ class DreamEvalHarness(LM):
             assert len(prompt_index) == batch.shape[1]
             prompt_index = prompt_index.unsqueeze(0).repeat(batch.shape[0], 1)
             un_batch = batch.clone()
-            un_batch[prompt_index] = self.mask_id
+            # Use torch.where instead of boolean indexing for TPU compatibility
+            un_batch = torch.where(prompt_index, self.mask_id, un_batch)
             batch = torch.cat([batch, un_batch])
 
         input = batch
@@ -392,7 +393,8 @@ class DreamEvalHarness(LM):
             mask_index = torch.triu(mask_index)
         else:
             mask_index = torch.tril(mask_index)
-        perturbed_[mask_index] = self.mask_id
+        # Use torch.where instead of boolean indexing for TPU compatibility
+        perturbed_ = torch.where(mask_index, self.mask_id, perturbed_)
         if self.log_type == "ftb":
             perturbed_seq = torch.cat(
                 [prefix.repeat(perturbed_.shape[0], 1), perturbed_], dim=-1
@@ -429,7 +431,8 @@ class DreamEvalHarness(LM):
             temp_index = torch.triu(temp_index, diagonal=1)
         else:
             temp_index = torch.tril(temp_index, diagonal=-1)
-        mask_index[temp_index] = False
+        # Use torch.where instead of boolean indexing for TPU compatibility
+        mask_index = torch.where(temp_index, False, mask_index)
         if self.log_type == "ftb":
             logits_index = torch.cat(
                 [

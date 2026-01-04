@@ -1408,8 +1408,13 @@ class LLaDA2MoeModelLM(LLaDA2MoePreTrainedModel, GenerationMixin):
                     transfer_index[0].scatter_(0, sorted_idx, top_k_mask)
 
                 if transfer_index.any():
-                    cur_x[:, -block_length:][transfer_index] = x0[transfer_index]
-                if eos_early_stop and (x0[transfer_index] == eos_id).any():
+                    # Use torch.where instead of boolean indexing for TPU compatibility
+                    block_slice = cur_x[:, -block_length:]
+                    block_slice = torch.where(transfer_index, x0, block_slice)
+                    cur_x[:, -block_length:] = block_slice
+                # Use torch.where for EOS check to avoid boolean indexing
+                transferred_tokens = torch.where(transfer_index, x0, torch.zeros_like(x0))
+                if eos_early_stop and (transferred_tokens == eos_id).any():
                     eos_pos_in_x = (cur_x[0] == eos_id).nonzero(as_tuple=True)
                     if len(eos_pos_in_x[0]) > 0:
                         eos_pos = eos_pos_in_x[0][0].item()

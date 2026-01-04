@@ -133,8 +133,8 @@ def diffusion_step_block(
     transfer = torch.zeros_like(x0, dtype=torch.bool)
     transfer.scatter_(1, sorted_idx, top_k_mask)
 
-    x_block_new = x_block.clone()
-    x_block_new[transfer] = x0[transfer]
+    # Use torch.where instead of boolean indexing for TPU compatibility
+    x_block_new = torch.where(transfer, x0, x_block)
     return x_block_new
 
 
@@ -300,8 +300,8 @@ class BD3LMSampler(BaseSampler):
 
             # Unconditional prefix cache + last logits (if CFG enabled)
             if cfg_scale > 0.0:
-                un_x_prefix = x_prefix.clone()
-                un_x_prefix[unmasked_index] = mask_id
+                # Use torch.where instead of boolean indexing for TPU compatibility
+                un_x_prefix = torch.where(unmasked_index, mask_id, x_prefix)
 
                 out_un_prefix = self.model(
                     un_x_prefix,
