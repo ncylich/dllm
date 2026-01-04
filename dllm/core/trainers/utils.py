@@ -105,6 +105,16 @@ class XLAMarkStepCallback(transformers.TrainerCallback):
     the graph can grow unbounded, causing memory issues and compilation overhead.
     This callback forces XLA to execute the accumulated graph at regular intervals.
 
+    IMPORTANT: This callback only calls mark_step() at the end of full training steps,
+    NOT after each gradient accumulation substep. Calling mark_step() during gradient
+    accumulation would break the accumulation by flushing the graph prematurely.
+
+    Note: accelerate's MpDeviceLoader already calls mark_step() when yielding batches,
+    so this callback may be redundant in most cases. It's kept as a safety net for
+    edge cases where MpDeviceLoader isn't used.
+
+    See: https://github.com/pytorch/xla/issues/3593
+
     Args:
         mark_step_interval: Call mark_step() every N training steps. Default is 1
             (every step), which ensures consistent graph sizes. Higher values may
@@ -123,19 +133,17 @@ class XLAMarkStepCallback(transformers.TrainerCallback):
                 pass
 
     def on_step_end(self, args, state, control, **kwargs):
-        """Called at the end of each training step."""
+        """Called at the end of each training step (after all gradient accumulation)."""
         if self._xm is not None and state.global_step % self.mark_step_interval == 0:
             self._xm.mark_step()
         return control
 
-    def on_substep_end(self, args, state, control, **kwargs):
-        """Called at the end of each gradient accumulation substep."""
-        # Mark step after each substep to keep graph size bounded during
-        # gradient accumulation. Without this, the graph grows across all
-        # accumulation steps and can exceed TPU memory.
-        if self._xm is not None:
-            self._xm.mark_step()
-        return control
+    # NOTE: on_substep_end is intentionally NOT implemented.
+    # Calling mark_step() after each gradient accumulation substep would break
+    # gradient accumulation by flushing the graph prematurely. Gradients need to
+    # accumulate across multiple backward passes before the optimizer step.
+    # The correct behavior is handled by accelerate's MpDeviceLoader which calls
+    # mark_step() automatically after each full training step.
 
 
 class EpochPPLMeter(transformers.TrainerCallback):
