@@ -47,10 +47,12 @@ class MDLMTrainer(transformers.Trainer):
         self.epoch_meter = EpochPPLMeter(self, train_prefix="train", eval_prefix="eval")
         self.add_callback(self.epoch_meter)
 
-        # Add XLA mark_step callback for TPU to prevent unbounded graph growth
+        # Add XLA profiler callback for TPU (enabled via DLLM_XLA_PROFILE=1)
+        # NOTE: We do NOT add XLAMarkStepCallback here because:
+        # 1. MpDeviceLoader already calls mark_step() when yielding batches
+        # 2. Calling mark_step() again in on_step_end causes sync hangs
+        # 3. The callback is only needed if NOT using MpDeviceLoader (rare)
         if is_tpu_available():
-            self.add_callback(XLAMarkStepCallback(mark_step_interval=1))
-            # Add XLA profiler callback (enabled via DLLM_XLA_PROFILE=1)
             self.add_callback(XLAProfilerCallback())
 
     def _preprocess_inputs(self, inputs):
