@@ -387,11 +387,13 @@ class BucketedBatchSampler(torch.utils.data.Sampler):
         return bucket_indices
 
     def __iter__(self):
-        # Create a generator for shuffling
+        # Create a generator for shuffling - use same seed across all replicas
+        # so they see batches from the same bucket at each step
         g = torch.Generator()
         g.manual_seed(self.seed + self.epoch)
 
         all_batches = []
+        batch_buckets = []  # Track which bucket each batch belongs to
 
         for bucket, indices in self.bucket_indices.items():
             if len(indices) == 0:
@@ -410,17 +412,40 @@ class BucketedBatchSampler(torch.utils.data.Sampler):
                 batch = indices[i : i + self.batch_size]
                 if len(batch) == self.batch_size or not self.drop_last:
                     all_batches.append(batch)
+                    batch_buckets.append(bucket)
 
         # Shuffle the order of batches across buckets
         if self.shuffle:
             batch_perm = torch.randperm(len(all_batches), generator=g).tolist()
             all_batches = [all_batches[i] for i in batch_perm]
+            batch_buckets = [batch_buckets[i] for i in batch_perm]
 
-        # Shard batches across replicas - each replica gets every num_replicas-th batch
-        # This ensures all replicas see different data
-        all_batches = all_batches[self.rank :: self.num_replicas]
+        # CRITICAL FOR TPU/XLA: All replicas must process the SAME bucket size at each step.
+        # XLA compiles a separate graph for each tensor shape. If different replicas have
+        # different bucket sizes at the same step, XLA hangs waiting for synchronization.
+        #
+        # Solution: Group batches by bucket, then shard WITHIN each bucket group.
+        # This ensures:
+        # 1. All replicas process bucket 256 batches first, then 512, then 768, then 1024
+        # 2. Within each bucket, replicas get different batches (different samples)
+        # 3. Minimizes recompilations (only 4 compilations for 4 buckets)
 
-        yield from all_batches
+        # Group batches by bucket
+        from collections import defaultdict
+        bucket_batches = defaultdict(list)
+        for batch, bucket in zip(all_batches, batch_buckets):
+            bucket_batches[bucket].append(batch)
+
+        # For each bucket, shard its batches across replicas, then concatenate
+        # This ensures all replicas transition to a new bucket at the same step
+        sharded_batches = []
+        for bucket in sorted(bucket_batches.keys()):
+            batches = bucket_batches[bucket]
+            # Each replica gets every num_replicas-th batch within this bucket
+            replica_batches = batches[self.rank :: self.num_replicas]
+            sharded_batches.extend(replica_batches)
+
+        yield from sharded_batches
 
     def __len__(self):
         total = 0
