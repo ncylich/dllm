@@ -244,6 +244,8 @@ def train():
     trainer_cls = dllm.core.trainers.MDLMTrainer
     if train_sampler is not None:
         # Create a subclass that overrides get_train_dataloader to use our sampler
+        # We use XLA's MpDeviceLoader directly instead of accelerator.prepare() to ensure
+        # proper TPU data loading semantics.
         class BucketedMDLMTrainer(dllm.core.trainers.MDLMTrainer):
             def __init__(self, bucket_sampler, *args, **kwargs):
                 super().__init__(*args, **kwargs)
@@ -266,9 +268,19 @@ def train():
                     pin_memory=self.args.dataloader_pin_memory,
                 )
 
-                # CRITICAL: Must prepare dataloader with accelerator for TPU/distributed training
-                # This wraps with MpDeviceLoader on TPU which handles device placement and mark_step()
-                return self.accelerator.prepare(dataloader)
+                # On TPU, wrap with MpDeviceLoader directly for proper XLA data pipelining.
+                # accelerator.prepare() can have issues with batch_sampler on XLA.
+                from dllm.utils.device import is_tpu_available
+                if is_tpu_available():
+                    import torch_xla.core.xla_model as xm
+                    import torch_xla.distributed.parallel_loader as pl
+                    device = xm.xla_device()
+                    dataloader = pl.MpDeviceLoader(dataloader, device)
+                else:
+                    # For GPU/CPU, use accelerator.prepare()
+                    dataloader = self.accelerator.prepare(dataloader)
+
+                return dataloader
 
         trainer = BucketedMDLMTrainer(
             bucket_sampler=train_sampler,
