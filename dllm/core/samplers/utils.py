@@ -79,23 +79,24 @@ def get_num_transfer_tokens(
             num_transfer_tokens[:, j] = samples
             remaining = remaining - samples.to(torch.float64)
 
-    # Compact: remove trailing zero-only columns
-    # Find columns that have at least one non-zero entry
-    has_tokens = (num_transfer_tokens > 0).any(dim=0)  # [steps]
+    # Compact trailing zero-only columns for efficiency (fewer loop iterations in caller)
+    # On TPU/XLA, .any() in boolean context forces a device sync, so we skip compaction there.
+    # On CUDA/CPU, compaction is safe and beneficial.
+    is_xla = device.type == "xla"
 
-    if has_tokens.any():
-        # Find the last column with tokens using a reverse cumsum approach
-        # This avoids .item() calls that cause TPU sync
-        reversed_has = has_tokens.flip(0)
-        reversed_cumsum = reversed_has.to(torch.int64).cumsum(dim=0)
-        keep_mask = reversed_cumsum.flip(0) > 0  # [steps] - True for cols up to last non-zero
+    if not is_xla:
+        # CUDA/CPU path: use .any() for efficient compaction
+        has_tokens = (num_transfer_tokens > 0).any(dim=0)  # [steps]
+        if has_tokens.any():
+            # Find last column with tokens
+            reversed_has = has_tokens.flip(0)
+            reversed_cumsum = reversed_has.to(torch.int64).cumsum(dim=0)
+            keep_mask = reversed_cumsum.flip(0) > 0
+            num_transfer_tokens = num_transfer_tokens[:, keep_mask]
+        else:
+            num_transfer_tokens = torch.zeros(B, 1, device=device, dtype=torch.int64)
 
-        # Use boolean indexing to select columns
-        num_transfer_tokens = num_transfer_tokens[:, keep_mask]
-    else:
-        # All zeros - return single column of zeros
-        num_transfer_tokens = torch.zeros(B, 1, device=device, dtype=torch.int64)
-
+    # On XLA (TPU), skip compaction - the calling code handles zero-transfer steps as no-ops
     return num_transfer_tokens
 
 
