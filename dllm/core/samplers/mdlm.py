@@ -11,6 +11,15 @@ import torch.nn.functional as F
 
 from dllm.core.samplers.base import BaseSampler, SamplerConfig, SamplerOutput
 from dllm.core.samplers.utils import add_gumbel_noise, get_num_transfer_tokens
+from dllm.utils.device import is_xla_available
+
+
+def _xla_mark_step_if_needed(device: torch.device) -> None:
+    """Call mark_step on TPU to prevent XLA graph bloat during iterative sampling."""
+    if device.type == "xla" and is_xla_available():
+        import torch_xla.core.xla_model as xm
+
+        xm.mark_step()
 
 
 @dataclass
@@ -131,6 +140,9 @@ class MDLMSampler(BaseSampler):
         steps = math.ceil(steps / num_blocks)  # per-block step budget
         histories = [x.clone()] if return_dict else None
 
+        # Cache -inf tensor to avoid repeated tensor creation in hot loop (helps TPU)
+        neg_inf = torch.tensor(-np.inf, device=self.model.device, dtype=torch.float32)
+
         for b in range(num_blocks):
             # Build a per-sample mask *within this block* (aligned to each prompt's tail)
             block_mask_index = torch.zeros(
@@ -213,12 +225,12 @@ class MDLMSampler(BaseSampler):
                 prompt_lens_t = torch.tensor(prompt_lens, device=x0_p.device).unsqueeze(1)
                 block_end = prompt_lens_t + (b + 1) * block_size
                 outside_block = col_indices >= block_end
-                x0_p = torch.where(outside_block, torch.tensor(-np.inf, device=x0_p.device, dtype=x0_p.dtype), x0_p)
+                x0_p = torch.where(outside_block, neg_inf.to(x0_p.dtype), x0_p)
 
                 # Only allow updates at currently masked positions; keep others fixed
                 x0 = torch.where(mask_index, x0, x)
                 confidence = torch.where(
-                    mask_index, x0_p, torch.tensor(-np.inf, device=x0_p.device, dtype=x0_p.dtype)
+                    mask_index, x0_p, neg_inf.to(x0_p.dtype)
                 )  # consider masked positions only
 
                 # Pick exactly `num_transfer_tokens[j, i]` highest-confidence positions per sample
@@ -238,6 +250,9 @@ class MDLMSampler(BaseSampler):
                 x = torch.where(transfer_index, x0, x)
                 if histories is not None:
                     histories.append(x.clone())
+
+            # Mark step after each block to prevent XLA graph bloat on TPU
+            _xla_mark_step_if_needed(x.device)
 
         # ----- Output format -----
         if not return_dict:
@@ -330,6 +345,9 @@ class MDLMSampler(BaseSampler):
         steps_per_block = math.ceil(steps / num_blocks)
         histories = [x.clone()] if return_dict else None
 
+        # Cache -inf tensor to avoid repeated tensor creation in hot loop (helps TPU)
+        neg_inf = torch.tensor(-np.inf, device=self.model.device, dtype=torch.float32)
+
         for b in range(num_blocks):
             start = b * block_size
             stop = min(start + block_size, T)
@@ -409,11 +427,11 @@ class MDLMSampler(BaseSampler):
                 before_block = col_indices < start
                 after_block = col_indices >= end_positions
                 outside_block = before_block | after_block
-                x0_p = torch.where(outside_block, torch.tensor(-np.inf, device=x0_p.device, dtype=x0_p.dtype), x0_p)
+                x0_p = torch.where(outside_block, neg_inf.to(x0_p.dtype), x0_p)
 
                 # Only consider currently-masked positions as candidates
                 x0 = torch.where(mask_index_full, x0, x)
-                confidence = torch.where(mask_index_full, x0_p, torch.tensor(-np.inf, device=x0_p.device, dtype=x0_p.dtype))
+                confidence = torch.where(mask_index_full, x0_p, neg_inf.to(x0_p.dtype))
 
                 # Pick exactly num_transfer_tokens[j, s] positions per sample
                 # Vectorized approach: sort by confidence, then use position mask to select top-k per row
@@ -432,6 +450,9 @@ class MDLMSampler(BaseSampler):
                 x = torch.where(transfer_index, x0, x)
                 if histories is not None:
                     histories.append(x.clone())
+
+            # Mark step after each block to prevent XLA graph bloat on TPU
+            _xla_mark_step_if_needed(x.device)
 
         # ----- Output format -----
         if not return_dict:

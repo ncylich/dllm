@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 import dllm
 from dllm.core.samplers import MDLMSampler, MDLMSamplerConfig
+from dllm.utils.device import is_xla_available
 
 
 @dataclass
@@ -391,6 +392,11 @@ class BERTEvalHarness(LM):
                 generated_ids = generated_output.sequences
             else:
                 generated_ids = generated_output
+            # Mark step before moving to CPU to execute pending XLA computation
+            if self.device.type == "xla" and is_xla_available():
+                import torch_xla.core.xla_model as xm
+
+                xm.mark_step()
             # Move to CPU before decoding to avoid TPU sync stall
             generated_ids_cpu = generated_ids[0].cpu()
             generated_answer = self.tokenizer.decode(
