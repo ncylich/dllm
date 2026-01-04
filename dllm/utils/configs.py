@@ -51,56 +51,21 @@ class DataArguments:
             "help": (
                 "Pad all sequences to max_length. Critical for TPU/XLA training "
                 "to avoid recompilation due to variable tensor shapes. "
-                "Automatically enabled when TPU is detected (unless use_length_bucketing is True)."
-            )
-        },
-    )
-    use_length_bucketing: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "Use length bucketing to reduce padding waste. Groups sequences by length "
-                "and pads to bucket boundaries instead of max_length. Provides significant "
-                "compute savings (~35-40%) at the cost of multiple XLA compilations."
-            )
-        },
-    )
-    length_buckets: str = field(
-        default="256,512,768,1024",
-        metadata={
-            "help": (
-                "Comma-separated list of bucket sizes for length bucketing. "
-                "Sequences are padded to the smallest bucket that fits them. "
-                "Each bucket triggers one XLA compilation. Default: '256,512,768,1024'"
+                "Automatically enabled when TPU is detected."
             )
         },
     )
 
     def __post_init__(self):
         # Auto-enable pad_to_max_length on TPU if not explicitly set
-        # (unless length bucketing is enabled, which handles fixed shapes differently)
         from dllm.utils.device import is_tpu_available
 
-        if is_tpu_available() and not self.pad_to_max_length and not self.use_length_bucketing:
+        if is_tpu_available() and not self.pad_to_max_length:
             logger.info(
                 "TPU detected: automatically enabling pad_to_max_length=True "
-                "to avoid XLA recompilation. Use --use_length_bucketing for better efficiency."
+                "to avoid XLA recompilation."
             )
             self.pad_to_max_length = True
-
-        # Parse length_buckets string to list
-        if isinstance(self.length_buckets, str):
-            self._parsed_buckets = [int(x.strip()) for x in self.length_buckets.split(",")]
-        else:
-            self._parsed_buckets = self.length_buckets
-
-        # Warn if both pad_to_max_length and use_length_bucketing are set
-        if self.pad_to_max_length and self.use_length_bucketing:
-            logger.warning(
-                "Both pad_to_max_length and use_length_bucketing are enabled. "
-                "Length bucketing will take precedence."
-            )
-            self.pad_to_max_length = False
 
 
 @dataclass

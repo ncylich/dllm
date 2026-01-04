@@ -186,43 +186,7 @@ def train():
         label_pad_token_id=tokenizer.pad_token_id,  # finetune on padded <eos_token>
     )
 
-    # Length bucketing for efficient TPU training (reduces padding waste by ~35-40%)
-    train_sampler = None
-    if data_args.use_length_bucketing and not data_args.streaming:
-        buckets = data_args._parsed_buckets
-        logger.info(
-            f"use_length_bucketing=True: using buckets {buckets} for efficient padding"
-        )
-        # Create bucketed collator (pads to bucket boundaries)
-        # NOTE: Do NOT remove attention_mask with length bucketing - the model needs it
-        # to know which tokens are padding. Removing it causes warn_if_padding_and_no_attention_mask
-        # to check `pad_token_id in input_ids` which triggers an XLA sync and hangs on TPU.
-        data_collator = dllm.utils.collators.BucketedPaddingWrapper(
-            base_collator,  # Keep attention_mask!
-            buckets=buckets,
-            pad_token_id=tokenizer.pad_token_id,
-            label_pad_token_id=-100,
-        )
-        # Create bucketed batch sampler (groups similar lengths)
-        # Get distributed info from accelerate's PartialState (works for TPU/GPU/CPU)
-        state = accelerate.PartialState()
-        train_lengths = [len(x) for x in dataset["train"]["input_ids"]]
-        train_sampler = dllm.utils.collators.BucketedBatchSampler(
-            lengths=train_lengths,
-            batch_size=training_args.per_device_train_batch_size,
-            buckets=buckets,
-            drop_last=training_args.dataloader_drop_last,
-            shuffle=True,
-            seed=training_args.seed,
-            num_replicas=state.num_processes,
-            rank=state.process_index,
-        )
-        # Log bucket distribution and sampler info
-        logger.info(f"  Distributed: {state.num_processes} processes, rank {state.process_index}")
-        logger.info(f"  Total batches: {len(train_sampler)} (per device)")
-        for bucket, indices in train_sampler.bucket_indices.items():
-            logger.info(f"  Bucket {bucket}: {len(indices):,} samples")
-    elif data_args.pad_to_max_length:
+    if data_args.pad_to_max_length:
         print("[DEBUG] Using pad_to_max_length...", flush=True)
         logger.info(
             f"pad_to_max_length=True: using fixed-length padding to max_length={data_args.max_length}"
@@ -240,68 +204,16 @@ def train():
         # Default: remove attention_mask (original behavior for non-TPU or simple cases)
         data_collator = dllm.utils.NoAttentionMaskWrapper(base_collator)
 
-    # Create a custom Trainer subclass that uses the bucketed sampler
-    trainer_cls = dllm.core.trainers.MDLMTrainer
-    if train_sampler is not None:
-        # Create a subclass that overrides get_train_dataloader to use our sampler
-        # We use XLA's MpDeviceLoader directly instead of accelerator.prepare() to ensure
-        # proper TPU data loading semantics.
-        class BucketedMDLMTrainer(dllm.core.trainers.MDLMTrainer):
-            def __init__(self, bucket_sampler, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self._bucket_sampler = bucket_sampler
-
-            def get_train_dataloader(self):
-                from torch.utils.data import DataLoader
-
-                # Update sampler epoch for proper shuffling
-                epoch = 0
-                if hasattr(self.state, "epoch") and self.state.epoch is not None:
-                    epoch = int(self.state.epoch)
-                self._bucket_sampler.set_epoch(epoch)
-
-                dataloader = DataLoader(
-                    self.train_dataset,
-                    batch_sampler=self._bucket_sampler,
-                    collate_fn=self.data_collator,
-                    num_workers=self.args.dataloader_num_workers,
-                    pin_memory=self.args.dataloader_pin_memory,
-                )
-
-                # On TPU, wrap with MpDeviceLoader directly for proper XLA data pipelining.
-                # accelerator.prepare() can have issues with batch_sampler on XLA.
-                from dllm.utils.device import is_tpu_available
-                if is_tpu_available():
-                    import torch_xla.core.xla_model as xm
-                    import torch_xla.distributed.parallel_loader as pl
-                    device = xm.xla_device()
-                    dataloader = pl.MpDeviceLoader(dataloader, device)
-                else:
-                    # For GPU/CPU, use accelerator.prepare()
-                    dataloader = self.accelerator.prepare(dataloader)
-
-                return dataloader
-
-        trainer = BucketedMDLMTrainer(
-            bucket_sampler=train_sampler,
-            model=model,
-            processing_class=tokenizer,
-            train_dataset=dataset["train"],
-            eval_dataset=eval_dataset,
-            args=training_args,
-            data_collator=data_collator,
-        )
-    else:
-        print("[DEBUG] Creating MDLMTrainer...", flush=True)
-        trainer = dllm.core.trainers.MDLMTrainer(
-            model=model,
-            processing_class=tokenizer,
-            train_dataset=dataset["train"],
-            eval_dataset=eval_dataset,
-            args=training_args,
-            data_collator=data_collator,
-        )
-        print("[DEBUG] Trainer created!", flush=True)
+    print("[DEBUG] Creating MDLMTrainer...", flush=True)
+    trainer = dllm.core.trainers.MDLMTrainer(
+        model=model,
+        processing_class=tokenizer,
+        train_dataset=dataset["train"],
+        eval_dataset=eval_dataset,
+        args=training_args,
+        data_collator=data_collator,
+    )
+    print("[DEBUG] Trainer created!", flush=True)
 
     print("[DEBUG] Starting trainer.train()...", flush=True)
     trainer.train()
