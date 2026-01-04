@@ -412,5 +412,9 @@ class BERTEvalHarness(LM):
         return out
 
 
-if __name__ == "__main__":
+def main():
     cli_evaluate()
+
+
+if __name__ == "__main__":
+    main()
