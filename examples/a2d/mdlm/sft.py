@@ -157,12 +157,12 @@ def train():
         args=training_args,
         right_shift_logits=training_args.right_shift_logits,
         data_collator=(
-            dllm.utils.NoAttentionMaskWrapper(  # padded <eos_token> should be visible
+            dllm.utils.NoAttentionMaskWrapper(
                 transformers.DataCollatorForSeq2Seq(
                     tokenizer,
                     return_tensors="pt",
                     padding=True,
-                    label_pad_token_id=tokenizer.pad_token_id,  # finetune on padded <eos_token>
+                    label_pad_token_id=-100,  # ignore padded tokens in loss
                 ),
             )
         ),

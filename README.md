@@ -202,7 +202,7 @@ trainer = dllm.core.trainers.MDLMTrainer(
         tokenizer,
         return_tensors="pt",
         padding=True,
-        label_pad_token_id=tokenizer.pad_token_id, 
+        label_pad_token_id=-100,  # ignore padded tokens in loss
     ),
 )
 trainer.train()
