@@ -15,6 +15,9 @@ def get_num_transfer_tokens(
     For each sample, determines how many masked tokens should be revealed
     per step based on the reverse diffusion schedule.
 
+    This implementation is vectorized to avoid device synchronization issues
+    on TPU/XLA while remaining fully compatible with CUDA/CPU.
+
     Args:
         mask_index: Boolean tensor [B, L] indicating masked positions.
         steps: Number of diffusion steps.
@@ -25,48 +28,75 @@ def get_num_transfer_tokens(
     Returns:
         Integer tensor [B, steps] with number of tokens to unmask per step.
     """
-    mask_num = mask_index.sum(dim=1, keepdim=True)
-    num_transfer_tokens = torch.zeros(
-        mask_num.size(0), steps, device=mask_index.device, dtype=torch.int64
-    )
-    for i in range(mask_num.size(0)):
-        for t, s, j in zip(range(steps, 0, -1), range(steps - 1, -1, -1), range(steps)):
-            s /= steps
-            t /= steps
-            reverse_transfer_prob = 1 - scheduler.reverse_mask_prob(s=s, t=t)
-            if not stochastic:
-                x = mask_num[i, 0].to(torch.float64) * reverse_transfer_prob
-                num_transfer_tokens[i, j] = torch.round(x).to(torch.int64)
-            else:
-                n = mask_num[i, 0].to(torch.float64)
-                num_transfer_tokens[i, j] = (
-                    torch.distributions.Binomial(n, reverse_transfer_prob)
-                    .sample()
-                    .to(torch.int64)
-                )
-            num_transfer_tokens[i, j] = torch.minimum(
-                num_transfer_tokens[i, j], mask_num[i, 0]
-            )
-            mask_num[i, 0] -= num_transfer_tokens[i, j]
-            if mask_num[i, 0].item() == 0:
-                break
-    # Note: because llada is not conditioned on time, this allows us to skip steps with no unmasking (i.e. transfer).
-    # Clear all zeros per row (compact) and right-pad with zeros
-    # Remove zeros per row, then pad only up to the max length across rows
-    rows = []
-    max_len = 0
-    for i in range(num_transfer_tokens.size(0)):
-        nonzero = num_transfer_tokens[i][num_transfer_tokens[i] > 0]
-        rows.append(nonzero)
-        max_len = max(max_len, nonzero.numel())
-    # Pad each row to max_len
-    padded_rows = []
-    for r in rows:
-        if r.numel() < max_len:
-            pad = torch.zeros(max_len - r.numel(), dtype=r.dtype, device=r.device)
-            r = torch.cat([r, pad])
-        padded_rows.append(r)
-    return torch.stack(padded_rows, dim=0)
+    B = mask_index.size(0)
+    device = mask_index.device
+
+    # Total masks per sample: [B]
+    mask_num = mask_index.sum(dim=1).to(torch.float64)
+
+    # Precompute reverse_transfer_prob for all steps (vectorized): [steps]
+    # t goes from steps down to 1, s goes from steps-1 down to 0
+    t_vals = torch.arange(steps, 0, -1, device=device, dtype=torch.float64) / steps
+    s_vals = torch.arange(steps - 1, -1, -1, device=device, dtype=torch.float64) / steps
+    # scheduler.reverse_mask_prob supports tensor inputs
+    reverse_transfer_prob = 1 - scheduler.reverse_mask_prob(s=s_vals, t=t_vals)  # [steps]
+
+    if not stochastic:
+        # Deterministic path: fully vectorized, no loops needed
+        # Compute cumulative unmask fractions using the product formula
+        mask_prob = 1 - reverse_transfer_prob  # probability of staying masked at each step
+        cumulative_mask_prob = torch.cumprod(mask_prob, dim=0)  # [steps]
+        cumulative_unmask_frac = 1 - cumulative_mask_prob  # [steps]
+
+        # Expected cumulative unmasked tokens at each step: [B, steps]
+        cumulative_unmasked = mask_num.unsqueeze(1) * cumulative_unmask_frac.unsqueeze(0)
+
+        # Round cumulative counts
+        cumulative_unmasked_rounded = torch.round(cumulative_unmasked).to(torch.int64)
+
+        # Clamp to not exceed total masks per sample
+        mask_num_int = mask_num.to(torch.int64).unsqueeze(1)
+        cumulative_unmasked_rounded = torch.minimum(cumulative_unmasked_rounded, mask_num_int)
+
+        # Per-step tokens = diff of cumulative (prepend zeros)
+        zero_col = torch.zeros(B, 1, device=device, dtype=torch.int64)
+        cumulative_with_zero = torch.cat([zero_col, cumulative_unmasked_rounded], dim=1)
+        num_transfer_tokens = cumulative_with_zero[:, 1:] - cumulative_with_zero[:, :-1]
+
+        # Ensure non-negative (can happen from rounding)
+        num_transfer_tokens = torch.clamp(num_transfer_tokens, min=0)
+    else:
+        # Stochastic path: must iterate since each step depends on remaining masks
+        # But we vectorize across the batch dimension to minimize syncs
+        num_transfer_tokens = torch.zeros(B, steps, device=device, dtype=torch.int64)
+        remaining = mask_num.clone()  # [B]
+
+        for j in range(steps):
+            prob = reverse_transfer_prob[j].expand(B)
+            # Sample from binomial distribution (vectorized across batch)
+            samples = torch.distributions.Binomial(remaining, prob).sample()
+            samples = torch.minimum(samples, remaining).to(torch.int64)
+            num_transfer_tokens[:, j] = samples
+            remaining = remaining - samples.to(torch.float64)
+
+    # Compact: remove trailing zero-only columns
+    # Find columns that have at least one non-zero entry
+    has_tokens = (num_transfer_tokens > 0).any(dim=0)  # [steps]
+
+    if has_tokens.any():
+        # Find the last column with tokens using a reverse cumsum approach
+        # This avoids .item() calls that cause TPU sync
+        reversed_has = has_tokens.flip(0)
+        reversed_cumsum = reversed_has.to(torch.int64).cumsum(dim=0)
+        keep_mask = reversed_cumsum.flip(0) > 0  # [steps] - True for cols up to last non-zero
+
+        # Use boolean indexing to select columns
+        num_transfer_tokens = num_transfer_tokens[:, keep_mask]
+    else:
+        # All zeros - return single column of zeros
+        num_transfer_tokens = torch.zeros(B, 1, device=device, dtype=torch.int64)
+
+    return num_transfer_tokens
 
 
 def add_gumbel_noise(logits: torch.Tensor, temperature: float) -> torch.Tensor:

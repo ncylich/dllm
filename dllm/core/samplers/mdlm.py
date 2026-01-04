@@ -407,7 +407,7 @@ class MDLMSampler(BaseSampler):
                 # Pick exactly num_transfer_tokens[j, s] positions per sample
                 transfer_index = torch.zeros_like(x, dtype=torch.bool)
                 for j in range(B):
-                    k = int(num_transfer_tokens[j, s].item())
+                    k = num_transfer_tokens[j, s]
                     if k > 0:
                         _, select_idx = torch.topk(confidence[j], k=k)
                         transfer_index[j, select_idx] = True
