@@ -217,14 +217,17 @@ class MDLMSampler(BaseSampler):
                 )  # consider masked positions only
 
                 # Pick exactly `num_transfer_tokens[j, i]` highest-confidence positions per sample
-                transfer_index = torch.zeros_like(
-                    x0, dtype=torch.bool, device=x0.device
-                )
-                for j in range(confidence.shape[0]):
-                    _, select_index = torch.topk(
-                        confidence[j], k=num_transfer_tokens[j, i]
-                    )
-                    transfer_index[j, select_index] = True
+                # Vectorized approach: sort by confidence, then use cumsum to select top-k per row
+                # This avoids per-row topk with variable k which causes TPU sync
+                sorted_conf, sorted_idx = torch.sort(confidence, dim=-1, descending=True)
+                # Create position indices [0, 1, 2, ...] for each row
+                positions = torch.arange(confidence.shape[1], device=confidence.device).unsqueeze(0).expand(B, -1)
+                # Select positions where position < num_transfer_tokens[j, i] for each row j
+                k_per_row = num_transfer_tokens[:, i].unsqueeze(1)  # [B, 1]
+                top_k_mask = positions < k_per_row  # [B, T] - True for top-k positions in sorted order
+                # Map back to original indices
+                transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+                transfer_index.scatter_(1, sorted_idx, top_k_mask)
 
                 # Commit chosen predictions into the canvas
                 x[transfer_index] = x0[transfer_index]
@@ -405,12 +408,17 @@ class MDLMSampler(BaseSampler):
                 confidence = torch.where(mask_index_full, x0_p, -np.inf)
 
                 # Pick exactly num_transfer_tokens[j, s] positions per sample
+                # Vectorized approach: sort by confidence, then use position mask to select top-k per row
+                # This avoids per-row topk with variable k which causes TPU sync
+                sorted_conf, sorted_idx = torch.sort(confidence, dim=-1, descending=True)
+                # Create position indices [0, 1, 2, ...] for each row
+                positions = torch.arange(confidence.shape[1], device=confidence.device).unsqueeze(0).expand(B, -1)
+                # Select positions where position < num_transfer_tokens[j, s] for each row j
+                k_per_row = num_transfer_tokens[:, s].unsqueeze(1)  # [B, 1]
+                top_k_mask = positions < k_per_row  # [B, T] - True for top-k positions in sorted order
+                # Map back to original indices
                 transfer_index = torch.zeros_like(x, dtype=torch.bool)
-                for j in range(B):
-                    k = num_transfer_tokens[j, s]
-                    if k > 0:
-                        _, select_idx = torch.topk(confidence[j], k=k)
-                        transfer_index[j, select_idx] = True
+                transfer_index.scatter_(1, sorted_idx, top_k_mask)
 
                 # Commit selected predictions into the canvas
                 x[transfer_index] = x0[transfer_index]

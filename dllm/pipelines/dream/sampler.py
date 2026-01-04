@@ -196,23 +196,42 @@ class DreamSampler(BaseSampler):
             )
             full_confidence[mask_index] = confidence
 
-            for j in range(full_confidence.shape[0]):
-                number_transfer_tokens = num_transfer_tokens_list[j, i]
-                if number_transfer_tokens > 0:
-                    if alg_temp is None or alg_temp == 0:
-                        _, transfer_index = torch.topk(
-                            full_confidence[j], number_transfer_tokens
-                        )
-                    else:
-                        fc = full_confidence[j] / alg_temp
-                        fc = F.softmax(fc, dim=-1)
-                        transfer_index = torch.multinomial(
-                            fc, num_samples=number_transfer_tokens
-                        )
+            # Vectorized top-k selection to avoid TPU sync
+            # This handles both deterministic (topk) and stochastic (multinomial) cases
+            B_cur = full_confidence.shape[0]
+            T_cur = full_confidence.shape[1]
+            k_per_row = num_transfer_tokens_list[:, i].unsqueeze(1)  # [B, 1]
 
-                    x_ = torch.full_like(x, mask_token_id, device=self.model.device)
-                    x_[mask_index] = x0.clone()
-                    x[j, transfer_index] = x_[j, transfer_index]
+            if alg_temp is None or alg_temp == 0:
+                # Deterministic: sort and select top-k per row
+                sorted_conf, sorted_idx = torch.sort(full_confidence, dim=-1, descending=True)
+                positions = torch.arange(T_cur, device=full_confidence.device).unsqueeze(0).expand(B_cur, -1)
+                top_k_mask = positions < k_per_row
+                transfer_mask = torch.zeros_like(full_confidence, dtype=torch.bool)
+                transfer_mask.scatter_(1, sorted_idx, top_k_mask)
+            else:
+                # Stochastic: need to handle multinomial per row
+                # For TPU compatibility, we vectorize as much as possible
+                fc = full_confidence / alg_temp
+                fc = F.softmax(fc, dim=-1)
+                # Multinomial with variable num_samples is tricky - fall back to loop
+                # but at least we avoid .item() by using tensor comparison
+                transfer_mask = torch.zeros_like(full_confidence, dtype=torch.bool)
+                max_k = int(k_per_row.max())
+                if max_k > 0:
+                    # Sample max_k for all rows, then mask out extras
+                    sampled_idx = torch.multinomial(fc, num_samples=max_k, replacement=False)
+                    positions = torch.arange(max_k, device=fc.device).unsqueeze(0).expand(B_cur, -1)
+                    valid_samples = positions < k_per_row
+                    # Only set transfer_mask for valid samples
+                    for j in range(B_cur):
+                        valid_idx = sampled_idx[j, valid_samples[j]]
+                        transfer_mask[j, valid_idx] = True
+
+            # Candidate tokens at masked positions only
+            x_ = torch.full_like(x, mask_token_id, device=self.model.device)
+            x_[mask_index] = x0.clone()
+            x[transfer_mask] = x_[transfer_mask]
 
             x = generation_tokens_hook_func(i, x, logits)
             if histories is not None:
@@ -392,25 +411,41 @@ class DreamSampler(BaseSampler):
             )
             full_confidence[mask_index] = confidence
 
-            # Commit the scheduled number of tokens per sample
-            for j in range(B):
-                number_transfer_tokens = num_transfer_tokens_list[j, i]
-                if number_transfer_tokens > 0:
-                    if alg_temp is None or alg_temp == 0:
-                        _, transfer_index = torch.topk(
-                            full_confidence[j], number_transfer_tokens
-                        )
-                    else:
-                        fc = full_confidence[j] / alg_temp
-                        fc = F.softmax(fc, dim=-1)
-                        transfer_index = torch.multinomial(
-                            fc, num_samples=number_transfer_tokens
-                        )
+            # Vectorized top-k selection to avoid TPU sync
+            # This handles both deterministic (topk) and stochastic (multinomial) cases
+            T_cur = full_confidence.shape[1]
+            k_per_row = num_transfer_tokens_list[:, i].unsqueeze(1)  # [B, 1]
 
-                    # Candidate tokens at masked positions only
-                    x_ = torch.full_like(x, mask_token_id, device=self.model.device)
-                    x_[mask_index] = x0.clone()
-                    x[j, transfer_index] = x_[j, transfer_index]
+            if alg_temp is None or alg_temp == 0:
+                # Deterministic: sort and select top-k per row
+                sorted_conf, sorted_idx = torch.sort(full_confidence, dim=-1, descending=True)
+                positions = torch.arange(T_cur, device=full_confidence.device).unsqueeze(0).expand(B, -1)
+                top_k_mask = positions < k_per_row
+                transfer_mask = torch.zeros_like(full_confidence, dtype=torch.bool)
+                transfer_mask.scatter_(1, sorted_idx, top_k_mask)
+            else:
+                # Stochastic: need to handle multinomial per row
+                # For TPU compatibility, we vectorize as much as possible
+                fc = full_confidence / alg_temp
+                fc = F.softmax(fc, dim=-1)
+                # Multinomial with variable num_samples is tricky - fall back to loop
+                # but at least we avoid .item() by using tensor comparison
+                transfer_mask = torch.zeros_like(full_confidence, dtype=torch.bool)
+                max_k = int(k_per_row.max())
+                if max_k > 0:
+                    # Sample max_k for all rows, then mask out extras
+                    sampled_idx = torch.multinomial(fc, num_samples=max_k, replacement=False)
+                    positions = torch.arange(max_k, device=fc.device).unsqueeze(0).expand(B, -1)
+                    valid_samples = positions < k_per_row
+                    # Only set transfer_mask for valid samples
+                    for j in range(B):
+                        valid_idx = sampled_idx[j, valid_samples[j]]
+                        transfer_mask[j, valid_idx] = True
+
+            # Candidate tokens at masked positions only
+            x_ = torch.full_like(x, mask_token_id, device=self.model.device)
+            x_[mask_index] = x0.clone()
+            x[transfer_mask] = x_[transfer_mask]
 
             # Optional token hook + history logging
             x = generation_tokens_hook_func(i, x, logits)

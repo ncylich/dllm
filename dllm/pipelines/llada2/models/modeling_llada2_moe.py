@@ -1384,21 +1384,28 @@ class LLaDA2MoeModelLM(LLaDA2MoePreTrainedModel, GenerationMixin):
                     active_logits, temperature=temperature, top_k=top_k, top_p=top_p
                 )
 
-                num_to_transfer = num_transfer_tokens_schedule[step].item()
+                num_to_transfer = num_transfer_tokens_schedule[step]  # Keep as tensor
                 transfer_index = torch.zeros_like(x0, dtype=torch.bool)
 
                 confidence = torch.where(active_block_mask, x0_p, -torch.inf)
                 high_conf_mask = confidence[0] > threshold
-                num_high_confidence = high_conf_mask.sum().item()
+                num_high_confidence = high_conf_mask.sum()
 
-                if num_high_confidence >= num_to_transfer:
+                # Vectorized approach to avoid .item() calls
+                use_high_conf = num_high_confidence >= num_to_transfer
+
+                if use_high_conf:
                     transfer_index[0] = high_conf_mask
                 else:
-                    _, idx = torch.topk(
-                        confidence[0],
-                        k=min(num_to_transfer, active_block_mask.sum().item()),
-                    )
-                    transfer_index[0, idx] = True
+                    # Use sort-based top-k to avoid .item() in topk k parameter
+                    sorted_conf, sorted_idx = torch.sort(confidence[0], descending=True)
+                    active_count = active_block_mask.sum()
+                    k = torch.minimum(num_to_transfer, active_count)
+                    # Create position mask
+                    positions = torch.arange(confidence.shape[1], device=confidence.device)
+                    top_k_mask = positions < k
+                    # Scatter back to original positions
+                    transfer_index[0].scatter_(0, sorted_idx, top_k_mask)
 
                 if transfer_index.any():
                     cur_x[:, -block_length:][transfer_index] = x0[transfer_index]

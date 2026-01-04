@@ -175,27 +175,35 @@ class LLaDAEvalHarness(LM):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         b, l = batch.shape
 
-        target_len = (l - prompt_index.sum()).item()
-        k = torch.randint(1, target_len + 1, (), device=batch.device)
+        # Compute target_len and prompt_len as tensors to avoid .item() sync on TPU
+        prompt_len = prompt_index.sum()
+        target_len = l - prompt_len
+
+        # For randint, we need a Python int - but this is called per-sample in loglikelihood
+        # so the sync is unavoidable here. Use int() which internally calls .item()
+        target_len_int = int(target_len)
+        prompt_len_int = int(prompt_len)
+
+        k = torch.randint(1, target_len_int + 1, (), device=batch.device)
 
         x = torch.round(
             torch.linspace(
-                float(k), k + (b - 1) * (target_len / b), steps=b, device=batch.device
+                float(k), k + (b - 1) * (target_len_int / b), steps=b, device=batch.device
             )
         ).long()
-        x = ((x - 1) % target_len) + 1
-        assert x.min() >= 1 and x.max() <= target_len
+        x = ((x - 1) % target_len_int) + 1
+        assert x.min() >= 1 and x.max() <= target_len_int
 
-        indices = torch.arange(target_len, device=batch.device).repeat(b, 1)
+        indices = torch.arange(target_len_int, device=batch.device).repeat(b, 1)
         is_mask = indices < x.unsqueeze(1)
 
         for i in range(b):
-            is_mask[i] = is_mask[i][torch.randperm(target_len)]
+            is_mask[i] = is_mask[i][torch.randperm(target_len_int)]
 
         is_mask = torch.cat(
             (
                 torch.zeros(
-                    b, prompt_index.sum(), dtype=torch.bool, device=batch.device
+                    b, prompt_len_int, dtype=torch.bool, device=batch.device
                 ),
                 is_mask,
             ),
@@ -204,7 +212,7 @@ class LLaDAEvalHarness(LM):
 
         noisy_batch = torch.where(is_mask, self.mask_id, batch)
 
-        return noisy_batch, (x / target_len).unsqueeze(1).repeat(1, l)
+        return noisy_batch, (x / target_len_int).unsqueeze(1).repeat(1, l)
 
     @torch.no_grad()
     def get_logits(

@@ -201,23 +201,42 @@ class LLaDA2Sampler(BaseSampler):
                     logits_block, temperature=temperature, top_k=top_k, top_p=top_p
                 )
 
-                num_to_transfer = int(transfer_schedule[step_idx].item())
+                num_to_transfer = transfer_schedule[step_idx]  # Keep as tensor
+                B_block = block_slice.size(0)
+                L_block = block_slice.size(1)
+
+                # Compute confidence with -inf for inactive positions
+                conf = torch.where(
+                    active_mask,
+                    probs,
+                    torch.full_like(probs, -float("inf")),
+                )
+
+                # Check which rows have enough high-confidence tokens
+                high_conf = (conf > threshold) & active_mask  # [B, L]
+                high_conf_counts = high_conf.sum(dim=1)  # [B]
+                use_high_conf = high_conf_counts >= num_to_transfer  # [B]
+
+                # For rows using high_conf, set transfer_index directly
+                # For rows using topk, use vectorized sort approach
                 transfer_index = torch.zeros_like(block_slice, dtype=torch.bool)
 
-                for b in range(block_slice.size(0)):
-                    conf = torch.where(
-                        active_mask[b],
-                        probs[b],
-                        torch.full_like(probs[b], -float("inf")),
-                    )
-                    high_conf = (conf > threshold) & active_mask[b]
-                    if high_conf.sum().item() >= num_to_transfer:
-                        transfer_index[b] = high_conf
-                    else:
-                        if num_to_transfer > 0 and active_mask[b].any():
-                            k = min(num_to_transfer, active_mask[b].sum().item())
-                            _, idx = torch.topk(conf, k=k)
-                            transfer_index[b, idx] = True
+                # Handle high_conf rows: transfer all high confidence tokens
+                transfer_index = transfer_index | (high_conf & use_high_conf.unsqueeze(1))
+
+                # Handle topk rows: vectorized sort approach
+                needs_topk = ~use_high_conf & (num_to_transfer > 0) & active_mask.any(dim=1)
+                if needs_topk.any():
+                    # Sort confidence and select top-k
+                    sorted_conf, sorted_idx = torch.sort(conf, dim=-1, descending=True)
+                    positions = torch.arange(L_block, device=conf.device).unsqueeze(0).expand(B_block, -1)
+                    active_counts = active_mask.sum(dim=1, keepdim=True)  # [B, 1]
+                    k_per_row = torch.minimum(num_to_transfer.expand(B_block).unsqueeze(1), active_counts)
+                    top_k_mask = (positions < k_per_row) & needs_topk.unsqueeze(1)
+                    # Scatter back to original positions
+                    topk_transfer = torch.zeros_like(block_slice, dtype=torch.bool)
+                    topk_transfer.scatter_(1, sorted_idx, top_k_mask)
+                    transfer_index = transfer_index | topk_transfer
 
                 block_slice[transfer_index] = tokens[transfer_index]
 

@@ -117,17 +117,21 @@ def diffusion_step_block(
     confidence = torch.where(mask_block, x0_p, neg_inf)
 
     # Pick positions to commit
-    transfer = torch.zeros_like(x0, dtype=torch.bool)  # [B, L]
-    for j in range(B):
-        k = int(num_transfer_step[j].item())
-        if k <= 0:
-            continue
-        valid_count = (confidence[j] > -float("inf")).sum().item()
-        if valid_count == 0:
-            continue
-        k = min(k, valid_count)
-        _, sel = torch.topk(confidence[j], k)
-        transfer[j, sel] = True
+    # Vectorized approach: sort by confidence, then use position mask to select top-k per row
+    # This avoids per-row topk with variable k which causes TPU sync
+    sorted_conf, sorted_idx = torch.sort(confidence, dim=-1, descending=True)
+    # Create position indices [0, 1, 2, ...] for each row
+    positions = torch.arange(L, device=device).unsqueeze(0).expand(B, -1)
+    # Count valid positions per row (not -inf)
+    valid_counts = (confidence > -float("inf")).sum(dim=1, keepdim=True)  # [B, 1]
+    # Clamp k to valid counts and ensure non-negative
+    k_per_row = torch.clamp(num_transfer_step.unsqueeze(1), min=0)  # [B, 1]
+    k_per_row = torch.minimum(k_per_row, valid_counts)
+    # Select positions where position < k for each row (in sorted order)
+    top_k_mask = positions < k_per_row  # [B, L]
+    # Map back to original indices
+    transfer = torch.zeros_like(x0, dtype=torch.bool)
+    transfer.scatter_(1, sorted_idx, top_k_mask)
 
     x_block_new = x_block.clone()
     x_block_new[transfer] = x0[transfer]
