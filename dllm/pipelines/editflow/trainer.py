@@ -226,6 +226,12 @@ class EditFlowTrainer(transformers.Trainer):
         self.max_w = max_w
         super().__init__(*args, **kwargs)
 
+    def log(self, logs: dict[str, float]) -> None:
+        # Fix train/loss to account for gradient accumulation (Trainer sums, we want mean)
+        if "loss" in logs and self.args.gradient_accumulation_steps > 1:
+            logs["loss"] = logs["loss"] / self.args.gradient_accumulation_steps
+        super().log(logs)
+
     def compute_loss(
         self,
         model: transformers.PreTrainedModel | nn.Module,
@@ -398,9 +404,6 @@ class EditFlowTrainer(transformers.Trainer):
 
         # -------- 8) Total --------
         loss = loss_surv + loss_pos + anchor
-
-        # Normalize for gradient accumulation so logged loss is comparable across settings
-        loss = loss / self.args.gradient_accumulation_steps
 
         return (loss, out) if return_outputs else loss
 
