@@ -84,6 +84,11 @@ def train():
 
     # ----- Model ------------------------------------------------------------------
     model = dllm.utils.get_model(model_args=model_args)
+
+    # Disable padding warning check on TPU - it forces device-to-host sync every forward pass
+    # by checking if pad_token_id is in input_ids (calls __contains__ which syncs)
+    if dllm.utils.is_tpu_available() and hasattr(model.config, "pad_token_id"):
+        model.config.pad_token_id = None  # Disables the warn_if_padding_and_no_attention_mask check
     # ----- Tokenizer --------------------------------------------------------------
     tokenizer = dllm.utils.get_tokenizer(model_args=model_args)
 
