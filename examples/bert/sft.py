@@ -45,6 +45,9 @@ import dllm
 if dllm.utils.device.is_tpu_available():
     from transformers import modeling_utils as _modeling_utils
     _modeling_utils.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
+    # Also patch it in modernbert module since it imports the function directly
+    from transformers.models.modernbert import modeling_modernbert as _modernbert
+    _modernbert.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
 
 import accelerate
 import transformers
