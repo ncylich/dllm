@@ -47,12 +47,6 @@ class MDLMTrainer(transformers.Trainer):
         self.epoch_meter = EpochPPLMeter(self, train_prefix="train", eval_prefix="eval")
         self.add_callback(self.epoch_meter)
 
-    def log(self, logs: dict[str, float], *args, **kwargs) -> None:
-        # Fix train/loss to account for gradient accumulation (Trainer sums, we want mean)
-        if "loss" in logs and self.args.gradient_accumulation_steps > 1:
-            logs["loss"] = logs["loss"] / self.args.gradient_accumulation_steps
-        super().log(logs, *args, **kwargs)
-
         # Add XLA profiler callback for TPU (enabled via DLLM_XLA_PROFILE=1)
         # NOTE: We do NOT add XLAMarkStepCallback here because:
         # 1. MpDeviceLoader already calls mark_step() when yielding batches
@@ -60,6 +54,12 @@ class MDLMTrainer(transformers.Trainer):
         # 3. The callback is only needed if NOT using MpDeviceLoader (rare)
         if is_tpu_available():
             self.add_callback(XLAProfilerCallback())
+
+    def log(self, logs: dict[str, float], *args, **kwargs) -> None:
+        # Fix train/loss to account for gradient accumulation (Trainer sums, we want mean)
+        if "loss" in logs and self.args.gradient_accumulation_steps > 1:
+            logs["loss"] = logs["loss"] / self.args.gradient_accumulation_steps
+        super().log(logs, *args, **kwargs)
 
     def _preprocess_inputs(self, inputs):
         if self.right_shift_logits:
