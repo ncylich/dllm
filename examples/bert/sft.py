@@ -93,6 +93,17 @@ def train():
 
     # ----- Model ------------------------------------------------------------------
     model = dllm.utils.get_model(model_args=model_args)
+
+    # Patch the model's inner encoder to skip warn_if_padding_and_no_attention_mask
+    # The function is called from ModernBertModel.forward and ModernBertEncoder.forward
+    # We need to patch it in the actual module after the model is loaded
+    if dllm.utils.device.is_tpu_available():
+        import sys
+        # Patch any loaded modernbert modules
+        for name, mod in list(sys.modules.items()):
+            if 'modernbert' in name and hasattr(mod, 'warn_if_padding_and_no_attention_mask'):
+                mod.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
+
     # ----- Tokenizer --------------------------------------------------------------
     tokenizer = dllm.utils.get_tokenizer(model_args=model_args)
 
