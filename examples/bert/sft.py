@@ -194,7 +194,7 @@ def train():
         tokenizer,
         return_tensors="pt",
         padding=True,
-        label_pad_token_id=-100,  # ignore padded tokens in loss
+        label_pad_token_id=tokenizer.pad_token_id,  # finetune on padded <eos_token>
     )
 
     if data_args.pad_to_max_length:

@@ -148,9 +148,26 @@ class MDLMTrainer(transformers.Trainer):
             inputs.get("attention_mask", None),
         )
         b, l = input_ids.shape
-        token_cnt_per_seq = torch.sum(labels != -100, dim=1, keepdim=True)  # [b, 1]
 
-        # === 1. Sample diffusion timesteps ===
+        # === 1. Compute trainable token mask ===
+        # Positions with label = -100 are excluded (ignored in loss).
+        # For PAD tokens: only include the FIRST pad token per sequence (to learn EOS),
+        # exclude subsequent padding to avoid dominating the loss.
+        pad_token_id = getattr(self.processing_class, "pad_token_id", None)
+        trainable_mask = labels != -100
+        if pad_token_id is not None:
+            is_pad = input_ids == pad_token_id
+            # Find first PAD position per sequence and include it in training
+            # Use cumsum to identify first PAD: cumsum == 1 means first PAD
+            pad_cumsum = is_pad.cumsum(dim=1)
+            first_pad = is_pad & (pad_cumsum == 1)
+            # Include first PAD (for EOS learning), exclude rest
+            # This works regardless of label_pad_token_id setting
+            trainable_mask = (trainable_mask | first_pad) & (~is_pad | first_pad)
+
+        token_cnt_per_seq = trainable_mask.sum(dim=1, keepdim=True)  # [b, 1]
+
+        # === 2. Sample diffusion timesteps ===
         # Each example draws a random timestep t ∈ [ε, 1), where ε avoids degenerate values near 0.
         # The scheduler defines the masking rate α(t); we convert it to a masking probability p_mask = 1 - α(t).
         t = self.time_epsilon + (1 - self.time_epsilon) * torch.rand(
@@ -158,12 +175,9 @@ class MDLMTrainer(transformers.Trainer):
         )  # [b]
         p_mask = 1.0 - self.scheduler(t).unsqueeze(1).expand(b, l)  # [b, l]
 
-        # === 2. Apply stochastic masking ===
+        # === 3. Apply stochastic masking ===
         # Tokens are masked independently according to p_mask(t).
-        # Positions with label = -100 are excluded (ignored in loss).
-        masked_indices = (torch.rand((b, l), device=input_ids.device) < p_mask) & (
-            labels != -100
-        )
+        masked_indices = (torch.rand((b, l), device=input_ids.device) < p_mask) & trainable_mask
         # Replace masked tokens with the special [MASK] token.
         noised_input_ids = torch.where(
             masked_indices, self.processing_class.mask_token_id, input_ids
