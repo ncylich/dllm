@@ -80,6 +80,10 @@ def train():
     # Patching the class (not instance) ensures ALL models including nested submodules are affected.
     if dllm.utils.device.is_tpu_available():
         transformers.PreTrainedModel.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
+        # Start XLA profiler server for on-demand profiling (negligible overhead when idle)
+        import torch_xla.debug.profiler as xp
+        profiler_server = xp.start_server(9012)
+        logger.info("XLA profiler server started on port 9012")
 
     # ----- Argument parsing -------------------------------------------------------
     parser = transformers.HfArgumentParser(
