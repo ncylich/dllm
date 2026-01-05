@@ -398,6 +398,10 @@ class EditFlowTrainer(transformers.Trainer):
 
         # -------- 8) Total --------
         loss = loss_surv + loss_pos + anchor
+
+        # Normalize for gradient accumulation so logged loss is comparable across settings
+        loss = loss / self.args.gradient_accumulation_steps
+
         return (loss, out) if return_outputs else loss
 
 

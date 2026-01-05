@@ -237,6 +237,9 @@ class BD3LMTrainer(MDLMTrainer):
             raise ValueError("Invalid loss_normalization_type.")
         loss = token_loss_normalized.sum()
 
+        # Normalize for gradient accumulation so logged loss is comparable across settings
+        loss = loss / self.args.gradient_accumulation_steps
+
         # === 8. Return final loss (and optionally model outputs) ===
         self.epoch_meter.update(
             split="train" if model.training else "eval", 
