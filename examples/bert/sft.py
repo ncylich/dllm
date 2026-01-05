@@ -40,19 +40,8 @@ from functools import partial
 # Import dllm FIRST to disable torch.compile on TPU before transformers loads
 import dllm
 
-# Patch warn_if_padding_and_no_attention_mask at import time for TPU
-# Must happen before any model-specific transformers modules are imported
-if dllm.utils.device.is_tpu_available():
-    from transformers import modeling_utils as _modeling_utils
-    _modeling_utils.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
-
 import accelerate
 import transformers
-
-# Patch modernbert module after transformers is imported but before model is loaded
-if dllm.utils.device.is_tpu_available():
-    from transformers.models.modernbert import modeling_modernbert as _modernbert
-    _modernbert.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
 
 logger = dllm.utils.get_default_logger(__name__)
 
@@ -95,6 +84,10 @@ def train():
 
     # ----- Model ------------------------------------------------------------------
     model = dllm.utils.get_model(model_args=model_args)
+    # Disable warn_if_padding_and_no_attention_mask on TPU - it triggers device-to-host
+    # sync via __contains__ check on input_ids tensor every forward pass
+    if dllm.utils.device.is_tpu_available():
+        model.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
     # ----- Tokenizer --------------------------------------------------------------
     tokenizer = dllm.utils.get_tokenizer(model_args=model_args)
 
