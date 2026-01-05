@@ -74,6 +74,13 @@ class TrainingArguments(dllm.utils.TrainingArguments):
 
 
 def train():
+    # Disable warn_if_padding_and_no_attention_mask on TPU at the CLASS level.
+    # This check calls __contains__ on input_ids which forces TPU-to-host sync every forward pass.
+    # Must be inside train() because accelerate spawns worker processes that reimport fresh modules.
+    # Patching the class (not instance) ensures ALL models including nested submodules are affected.
+    if dllm.utils.device.is_tpu_available():
+        transformers.PreTrainedModel.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
+
     # ----- Argument parsing -------------------------------------------------------
     parser = transformers.HfArgumentParser(
         (ModelArguments, DataArguments, TrainingArguments)
@@ -84,10 +91,6 @@ def train():
 
     # ----- Model ------------------------------------------------------------------
     model = dllm.utils.get_model(model_args=model_args)
-    # Disable warn_if_padding_and_no_attention_mask on TPU - it triggers device-to-host
-    # sync via __contains__ check on input_ids tensor every forward pass
-    if dllm.utils.device.is_tpu_available():
-        model.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
     # ----- Tokenizer --------------------------------------------------------------
     tokenizer = dllm.utils.get_tokenizer(model_args=model_args)
 
