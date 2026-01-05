@@ -220,6 +220,11 @@ def train():
     )
     print("[DEBUG] Trainer created!", flush=True)
 
+    # Disable num_items_in_batch computation on TPU - it triggers _tpu_gather every step
+    # which causes device-to-host sync. With fixed batch sizes, this is unnecessary.
+    if dllm.utils.device.is_tpu_available():
+        trainer.model_accepts_loss_kwargs = False
+
     print("[DEBUG] Starting trainer.train()...", flush=True)
     trainer.train()
     trainer.save_model(os.path.join(training_args.output_dir, "checkpoint-final"))
