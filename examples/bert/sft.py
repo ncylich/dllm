@@ -87,8 +87,10 @@ def train():
 
     # Disable padding warning check on TPU - it forces device-to-host sync every forward pass
     # by checking if pad_token_id is in input_ids (calls __contains__ which syncs)
-    if dllm.utils.device.is_tpu_available() and hasattr(model.config, "pad_token_id"):
-        model.config.pad_token_id = None  # Disables the warn_if_padding_and_no_attention_mask check
+    if dllm.utils.device.is_tpu_available():
+        # Monkey-patch the warn_if_padding_and_no_attention_mask to be a no-op
+        import transformers.modeling_utils
+        transformers.modeling_utils.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
     # ----- Tokenizer --------------------------------------------------------------
     tokenizer = dllm.utils.get_tokenizer(model_args=model_args)
 
