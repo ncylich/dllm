@@ -8,7 +8,6 @@ Large Language Diffusion Models:
 https://arxiv.org/abs/2502.09992
 """
 
-import os
 from typing import Any
 
 import torch
@@ -20,10 +19,6 @@ from dllm.core.schedulers import BaseAlphaScheduler, LinearAlphaScheduler
 from dllm.utils.data import prepend_bos
 from dllm.utils.device import is_tpu_available
 from .utils import EpochPPLMeter, XLAMarkStepCallback, XLAProfilerCallback
-
-# Check if XLA compile should be used for training (experimental)
-# Enable with DLLM_XLA_COMPILE=1
-_USE_XLA_COMPILE = os.environ.get("DLLM_XLA_COMPILE", "").lower() in ("1", "true", "yes")
 
 
 class MDLMTrainer(transformers.Trainer):
@@ -59,20 +54,6 @@ class MDLMTrainer(transformers.Trainer):
         # 3. The callback is only needed if NOT using MpDeviceLoader (rare)
         if is_tpu_available():
             self.add_callback(XLAProfilerCallback())
-
-        # Experimental: wrap compute_loss with torch_xla.compile for potential speedup
-        # Enable with DLLM_XLA_COMPILE=1
-        if _USE_XLA_COMPILE and is_tpu_available():
-            try:
-                import torch_xla
-                # Enable eager mode for torch_xla.compile to work properly
-                torch_xla.experimental.eager_mode(True)
-                # Compile the compute_loss method
-                self._original_compute_loss = self.compute_loss
-                self.compute_loss = torch_xla.compile(self._original_compute_loss)
-                print("[XLA Compile] Wrapped compute_loss with torch_xla.compile (experimental)")
-            except Exception as e:
-                print(f"[XLA Compile] Failed to enable torch_xla.compile: {e}")
 
     def _preprocess_inputs(self, inputs):
         if self.right_shift_logits:
