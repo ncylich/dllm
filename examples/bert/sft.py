@@ -40,15 +40,6 @@ from functools import partial
 # Import dllm FIRST to disable torch.compile on TPU before transformers loads
 import dllm
 
-# Disable warn_if_padding_and_no_attention_mask BEFORE importing transformers models
-# This check calls __contains__ on input_ids which forces TPU-to-host sync every forward pass
-if dllm.utils.device.is_tpu_available():
-    from transformers import modeling_utils as _modeling_utils
-    _modeling_utils.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
-    # Also patch it in modernbert module since it imports the function directly
-    from transformers.models.modernbert import modeling_modernbert as _modernbert
-    _modernbert.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
-
 import accelerate
 import transformers
 
@@ -92,18 +83,15 @@ def train():
     dllm.utils.initial_training_setup(model_args, data_args, training_args)
 
     # ----- Model ------------------------------------------------------------------
-    model = dllm.utils.get_model(model_args=model_args)
-
-    # Patch the model's inner encoder to skip warn_if_padding_and_no_attention_mask
-    # The function is called from ModernBertModel.forward and ModernBertEncoder.forward
-    # We need to patch it in the actual module after the model is loaded
+    # Disable warn_if_padding_and_no_attention_mask BEFORE loading model on TPU
+    # This check calls __contains__ on input_ids which forces TPU-to-host sync every forward pass
     if dllm.utils.device.is_tpu_available():
-        import sys
-        # Patch any loaded modernbert modules
-        for name, mod in list(sys.modules.items()):
-            if 'modernbert' in name and hasattr(mod, 'warn_if_padding_and_no_attention_mask'):
-                mod.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
+        from transformers import modeling_utils as _modeling_utils
+        _modeling_utils.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
+        from transformers.models.modernbert import modeling_modernbert as _modernbert
+        _modernbert.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
 
+    model = dllm.utils.get_model(model_args=model_args)
     # ----- Tokenizer --------------------------------------------------------------
     tokenizer = dllm.utils.get_tokenizer(model_args=model_args)
 
