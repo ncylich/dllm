@@ -89,8 +89,8 @@ def train():
     # by checking if pad_token_id is in input_ids (calls __contains__ which syncs)
     if dllm.utils.device.is_tpu_available():
         # Monkey-patch the warn_if_padding_and_no_attention_mask to be a no-op
-        import transformers.modeling_utils
-        transformers.modeling_utils.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
+        from transformers import modeling_utils as _modeling_utils
+        _modeling_utils.warn_if_padding_and_no_attention_mask = lambda *args, **kwargs: None
     # ----- Tokenizer --------------------------------------------------------------
     tokenizer = dllm.utils.get_tokenizer(model_args=model_args)
 
